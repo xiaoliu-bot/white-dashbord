@@ -190,8 +190,8 @@
 
 <script>
   /* ---------- 真实数据：market-monitor 仓库的 api/data.json（由 fetch_data.py 每日收盘抓取） ---------- */
-  const DATA_URL = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';
-  const FALLBACK = 'api/data.json';   // white-dashbord 本地兜底
+  const DATA_URL = 'api/data.json';
+  const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';   // white-dashbord 本地兜底
   const $ = s => document.querySelector(s);
   const yi = v => (v||0) / 1e8;        // 元 -> 亿
   let DATA = null;
