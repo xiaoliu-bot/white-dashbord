@@ -19,40 +19,34 @@ import datetime as _dt
 
 # === 指数（Tushare 优先，AKShare/腾讯兜底） ===
 def fetch_indices_tushare(token):
-    """用 Tushare 拉 A 股三大指数最新收盘（稳定，绕过东财封禁）"""
-    if not token:
-        print("  ℹ️ 未配置 TUSHARE_TOKEN，跳过 Tushare")
-        return {}
+    """用 Tushare 旧版免费接口拉 A 股三大指数（不受 pro 积分/频率限制）"""
     try:
         import tushare as ts
-        ts.set_token(token)
-        pro = ts.pro_api()
+        if token:
+            try: ts.set_token(token)
+            except Exception: pass
         mapping = {
-            '000001.SH': ('000001', '上证指数'),
-            '000300.SH': ('000300', '沪深300'),
-            '399006.SZ': ('399006', '创业板指'),
+            '000001': ('000001', '上证指数'),
+            '000300': ('000300', '沪深300'),
+            '399006': ('399006', '创业板指'),
         }
+        end = _dt.date.today().strftime('%Y-%m-%d')
+        start = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y-%m-%d')
         out = {}
-        end = _dt.date.today().strftime('%Y%m%d')
-        start = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y%m%d')
-        items = list(mapping.items())
-        for i, (tcode, (key, name)) in enumerate(items):
+        for key, (code, name) in mapping.items():
             try:
-                df = pro.index_daily(ts_code=tcode, start_date=start, end_date=end)
+                df = ts.get_hist_data(code, start=start, end=end, retry_count=2)
                 if df is not None and not df.empty:
-                    row = df.sort_values('trade_date').iloc[-1]
-                    close = float(row['close']); pre = float(row['pre_close'])
-                    chg = round(close - pre, 2)
-                    pct = round(chg / pre * 100, 2) if pre else 0.0
+                    row = df.iloc[-1]
+                    close = float(row['close'])
+                    pct = round(float(row.get('pct_change', 0) or 0), 2)
+                    chg = round(float(row.get('price_change', 0) or 0), 2)
                     out[key] = {'name': name, 'price': round(close, 2), 'chg': chg, 'pct': pct}
-                    print(f"  ✅ Tushare {name}: {close} ({pct}%)")
+                    print(f"  ✅ Tushare(legacy) {name}: {close} ({pct}%)")
                 else:
-                    print(f"    · Tushare {name}: 空数据")
+                    print(f"    · Tushare(legacy) {name}: 空数据")
             except Exception as e:
-                print(f"    · Tushare {name} 失败: {e}")
-            # 限速：免费/低积分接口约 1 次/分钟，调用间休眠避免触发频率限制
-            if i < len(items) - 1:
-                time.sleep(65)
+                print(f"    · Tushare(legacy) {name} 失败: {e}")
         print(f"  ✅ Tushare 指数: {list(out.keys())}")
         return out
     except Exception as e:
