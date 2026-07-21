@@ -1,17 +1,10 @@
 {
   "updated": "2026-07-21",
-  "indices": {
-    "HSTECH": {
-      "name": "恒生科技",
-      "price": 4814.83,
-      "chg": 1.32,
-      "pct": 0.03
-    }
-  },
+  "indices": {},
   "gold": {
-    "usd": 4078.9,
+    "usd": 4076.0,
     "usd_pct": 0.01,
-    "cny": 950.76,
+    "cny": 950.09,
     "cny_pct": 0.01
   },
   "plateFlows": [
