@@ -35,7 +35,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin https://xiaoliu-bot:${{ secrets.GH_PAT }}@github.com/xiaoliu-bot/market-monitor.git
+          git remote set-url origin https://xiaoliu-bot:${{ secrets.GH_PAT }}@github.com/xiaoliu-bot/white-dashbord.git
 
       - name: Commit and push
         run: |
