@@ -2,11 +2,12 @@
 """
 每日收盘数据抓取 → api/data.json + api/history/YYYY-MM-DD.json
 数据源：
-  - AKShare（东财数据，内部绕过封禁）
+  - Tushare（A股指数：上证/沪深300/创业板，稳定优先）
+  - AKShare（东财数据，作为 Tushare 失败时的兜底）
+  - 腾讯接口（恒生科技）
   - Gold-API.com（国际金价，无需 key）
-  - AKShare stock_sector_spot（板块涨跌）
-  - AKShare stock_fund_flow_industry（行业资金流）
-  - AKShare stock_fund_flow_concept（概念资金流）
+  - AKShare stock_fund_flow_industry / concept（板块资金流）
+Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
 import json, time, os, datetime
 import akshare as ak
@@ -14,18 +15,56 @@ import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
 
-# === 指数 ===
-def fetch_indices():
-    """上证/沪深300/创业板 + 恒生科技"""
-    result = {}
+import datetime as _dt
+
+# === 指数（Tushare 优先，AKShare/腾讯兜底） ===
+def fetch_indices_tushare(token):
+    """用 Tushare 拉 A 股三大指数最新收盘（稳定，绕过东财封禁）"""
+    if not token:
+        print("  ℹ️ 未配置 TUSHARE_TOKEN，跳过 Tushare")
+        return {}
     try:
-        # 上证、沪深300（东财上证系列指数）
-        df = ak.stock_zh_index_spot_em(symbol='上证系列指数')
-        index_map = {
-            '000001': ('上证指数',),
-            '000300': ('沪深300',),
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+        mapping = {
+            '000001.SH': ('000001', '上证指数'),
+            '000300.SH': ('000300', '沪深300'),
+            '399006.SZ': ('399006', '创业板指'),
         }
-        for code, (name,) in index_map.items():
+        out = {}
+        end = _dt.date.today().strftime('%Y%m%d')
+        start = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y%m%d')
+        for tcode, (key, name) in mapping.items():
+            try:
+                df = pro.index_daily(ts_code=tcode, start_date=start, end_date=end)
+            except Exception as e:
+                print(f"    · Tushare {name} 失败: {e}")
+                continue
+            if df is None or df.empty:
+                continue
+            row = df.sort_values('trade_date').iloc[-1]
+            close = float(row['close']); pre = float(row['pre_close'])
+            chg = round(close - pre, 2)
+            pct = round(chg / pre * 100, 2) if pre else 0.0
+            out[key] = {'name': name, 'price': round(close, 2), 'chg': chg, 'pct': pct}
+        print(f"  ✅ Tushare 指数: {list(out.keys())}")
+        return out
+    except Exception as e:
+        print(f"  ❌ Tushare 指数整体失败: {e}")
+        return {}
+
+def fetch_indices():
+    """上证/沪深300/创业板（Tushare→AKShare兜底） + 恒生科技（腾讯）"""
+    result = fetch_indices_tushare(os.environ.get('TUSHARE_TOKEN'))
+    covered = set(result.keys())
+
+    # 上证、沪深300（东财上证系列指数兜底）
+    try:
+        df = ak.stock_zh_index_spot_em(symbol='上证系列指数')
+        for code, (name,) in {'000001': ('上证指数',), '000300': ('沪深300',)}.items():
+            if code in covered:
+                continue
             row = df[df['代码'] == code]
             if not row.empty:
                 r = row.iloc[0]
@@ -35,21 +74,24 @@ def fetch_indices():
                     'chg': round(float(r['涨跌额'] or 0), 2),
                     'pct': round(float(r['涨跌幅'] or 0), 2),
                 }
-
-        # 创业板（深证系列指数）
-        df2 = ak.stock_zh_index_spot_em(symbol='深证系列指数')
-        cy = df2[df2['名称'] == '创业板指']
-        if not cy.empty:
-            r = cy.iloc[0]
-            result['399006'] = {
-                'name': '创业板指',
-                'price': round(float(r['最新价'] or 0), 2),
-                'chg': round(float(r['涨跌额'] or 0), 2),
-                'pct': round(float(r['涨跌幅'] or 0), 2),
-            }
-        print(f"  ✅ 指数: {list(result.keys())}")
     except Exception as e:
-        print(f"  ❌ 指数失败: {e}")
+        print(f"  ❌ 指数(AKShare补充)失败: {e}")
+
+    # 创业板（深证系列指数兜底）
+    try:
+        df2 = ak.stock_zh_index_spot_em(symbol='深证系列指数')
+        if '399006' not in result:
+            cy = df2[df2['名称'] == '创业板指']
+            if not cy.empty:
+                r = cy.iloc[0]
+                result['399006'] = {
+                    'name': '创业板指',
+                    'price': round(float(r['最新价'] or 0), 2),
+                    'chg': round(float(r['涨跌额'] or 0), 2),
+                    'pct': round(float(r['涨跌幅'] or 0), 2),
+                }
+    except Exception as e:
+        print(f"  ❌ 创业板(AKShare补充)失败: {e}")
 
     # 恒生科技（腾讯接口）
     try:
