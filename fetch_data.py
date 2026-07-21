@@ -35,19 +35,24 @@ def fetch_indices_tushare(token):
         out = {}
         end = _dt.date.today().strftime('%Y%m%d')
         start = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y%m%d')
-        for tcode, (key, name) in mapping.items():
+        items = list(mapping.items())
+        for i, (tcode, (key, name)) in enumerate(items):
             try:
                 df = pro.index_daily(ts_code=tcode, start_date=start, end_date=end)
+                if df is not None and not df.empty:
+                    row = df.sort_values('trade_date').iloc[-1]
+                    close = float(row['close']); pre = float(row['pre_close'])
+                    chg = round(close - pre, 2)
+                    pct = round(chg / pre * 100, 2) if pre else 0.0
+                    out[key] = {'name': name, 'price': round(close, 2), 'chg': chg, 'pct': pct}
+                    print(f"  ✅ Tushare {name}: {close} ({pct}%)")
+                else:
+                    print(f"    · Tushare {name}: 空数据")
             except Exception as e:
                 print(f"    · Tushare {name} 失败: {e}")
-                continue
-            if df is None or df.empty:
-                continue
-            row = df.sort_values('trade_date').iloc[-1]
-            close = float(row['close']); pre = float(row['pre_close'])
-            chg = round(close - pre, 2)
-            pct = round(chg / pre * 100, 2) if pre else 0.0
-            out[key] = {'name': name, 'price': round(close, 2), 'chg': chg, 'pct': pct}
+            # 限速：免费/低积分接口约 1 次/分钟，调用间休眠避免触发频率限制
+            if i < len(items) - 1:
+                time.sleep(65)
         print(f"  ✅ Tushare 指数: {list(out.keys())}")
         return out
     except Exception as e:
