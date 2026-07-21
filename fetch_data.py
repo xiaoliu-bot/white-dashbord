@@ -108,13 +108,13 @@ def fetch_indices():
         with urllib.request.urlopen(req, timeout=10) as r:
             content = r.read().decode('gbk', errors='replace')
         for line in content.split(';'):
-            m = re.search(r'"([^"]+)"', line)
+            m = re.search(r'v_(\w+)="([^"]+)"', line)
             if not m:
                 continue
-            p = m.group(1).split('~')
-            if len(p) < 33 or not p[1]:
+            gcode = m.group(1)            # sh000001 / sh000300 / sz399006 / hkHSTECH
+            p = m.group(2).split('~')
+            if len(p) < 33:
                 continue
-            gcode = p[1]
             for key, (name, tcode) in tencent.items():
                 if tcode == gcode:
                     if key in covered:
