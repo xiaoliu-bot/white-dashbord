@@ -44,25 +44,24 @@
   .clock{font-size:12px;color:var(--faint);}
 
   section{margin-bottom:18px;}
-  .sec-head{display:flex;align-items:baseline;justify-content:space-between;margin:0 4px 12px;}
+  .sec-head{display:flex;align-items:baseline;justify-content:space-between;margin:0 4px 12px;flex-wrap:wrap;gap:6px;}
   .sec-title{font-size:15px;font-weight:600;letter-spacing:.4px;}
   .sec-title::before{content:"";display:inline-block;width:4px;height:15px;background:var(--red);
     border-radius:2px;margin-right:9px;vertical-align:-2px;}
   .sec-sub{font-size:12px;color:var(--faint);}
 
   /* M1 Indices */
-  .indices{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;}
+  .indices{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;}
   .icard{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;}
   .icard .row1{display:flex;align-items:center;justify-content:space-between;}
   .icard .iname{font-size:14px;font-weight:600;}
   .icard .icode{font-size:11px;color:var(--faint);background:#1c1c20;padding:2px 7px;border-radius:5px;}
   .icard .ival{font-size:30px;font-weight:700;margin:10px 0 4px;}
   .icard .ichg{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:5px;}
-  .icard .ispark{margin-top:10px;}
   .up{color:var(--red);} .down{color:var(--green);}
 
   /* M2 Sectors */
-  .sectors{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+  .sectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
   .stile{background:var(--card);border:1px solid var(--border);border-radius:9px;padding:13px 14px;
     display:flex;flex-direction:column;gap:6px;transition:border-color .4s,box-shadow .4s;}
   .stile.hot{border-color:var(--red);box-shadow:0 0 0 1px var(--red-soft),0 4px 16px rgba(244,63,94,.10);}
@@ -74,12 +73,12 @@
   /* M3 Gold */
   .gold{display:grid;grid-template-columns:300px 1fr;gap:16px;background:var(--card);
     border:1px solid var(--border);border-radius:10px;padding:18px;}
-  .gold .gleft{display:flex;flex-direction:column;justify-content:center;gap:8px;}
-  .gold .gname{font-size:14px;color:var(--muted);}
+  .gold .gleft{display:flex;flex-direction:column;justify-content:center;gap:6px;}
+  .gold .gname{font-size:13px;color:var(--muted);}
   .gold .gprice{font-size:34px;font-weight:700;color:var(--gold);}
   .gold .gunit{font-size:13px;color:var(--faint);}
   .gold .gchg{font-size:14px;font-weight:700;}
-  .gold .gchart{width:100%;}
+  .gold .gchart{width:100%;display:flex;flex-direction:column;justify-content:center;}
 
   /* M4 Bubbles */
   .bubwrap{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;}
@@ -125,7 +124,7 @@
     </div>
     <div class="status">
       <span class="live"><span class="dot"></span>LIVE</span>
-      <span class="clock mono" id="clock">--:--:--</span>
+      <span class="clock mono" id="clock">加载中…</span>
     </div>
   </div>
 
@@ -133,7 +132,7 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">大盘指数</div>
-      <div class="sec-sub">上证 · 纳斯达克 · 恒生科技</div>
+      <div class="sec-sub">上证 · 沪深300 · 创业板 · 恒生科技（来源 AKShare）</div>
     </div>
     <div class="indices" id="indices"></div>
   </section>
@@ -142,7 +141,7 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">板块异动看板</div>
-      <div class="sec-sub">吸筹 + 上涨 标红 · 共 11 个板块</div>
+      <div class="sec-sub">板块涨跌幅 · 红涨绿跌（吸筹标红）</div>
     </div>
     <div class="sectors" id="sectors"></div>
   </section>
@@ -151,13 +150,16 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">黄金实时金价</div>
-      <div class="sec-sub">实时金价 + 两周走势预测</div>
+      <div class="sec-sub">国际 / 国内金价 · 来源 Gold-API</div>
     </div>
     <div class="gold">
       <div class="gleft">
-        <div class="gname">国际金价 / 国内含税</div>
-        <div><span class="gprice mono" id="goldPrice">--</span> <span class="gunit">元/克</span></div>
+        <div class="gname">国际金价 (USD/oz)</div>
+        <div><span class="gprice mono" id="goldPrice">--</span> <span class="gunit">USD/oz</span></div>
         <div class="gchg mono" id="goldChg">--</div>
+        <div class="gname" style="margin-top:12px">国内金价 (CNY/g)</div>
+        <div><span class="gprice mono" id="goldCNY" style="font-size:24px;color:var(--gold)">--</span> <span class="gunit">元/克</span></div>
+        <div class="gchg mono" id="goldCNYChg" style="font-size:13px">--</div>
       </div>
       <div class="gchart" id="goldChart"></div>
     </div>
@@ -167,7 +169,7 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">板块资金流 · 气泡图</div>
-      <div class="sec-sub">球径 ∝ 资金绝对值 · 红=流入 绿=流出 · 每 2.2s 刷新</div>
+      <div class="sec-sub">球径 ∝ 资金绝对值 · 红=净流入 绿=净流出 · 数据更新时刷新</div>
     </div>
     <div class="bubwrap">
       <div class="panel" id="panel">
@@ -179,191 +181,142 @@
   </section>
 
   <div class="foot">
-    <span>● 数据自动刷新中 · 每 2.2s</span>
-    <span>● 红=涨/吸筹 · 绿=跌/出货 · 金=黄金</span>
-    <span class="note">* 本看板为设计稿动态演示，数据为模拟实时流，不构成投资建议</span>
+    <span>● 数据来源：market-monitor / api/data.json（每日收盘抓取）</span>
+    <span>● 红=涨/净流入 · 绿=跌/净流出 · 金=黄金</span>
+    <span class="note">* 数据由 fetch_data.py 从 AKShare / Gold-API 抓取，仅供参考，不构成投资建议</span>
   </div>
 
 </div>
 
 <script>
-  /* ---------- 工具 ---------- */
+  /* ---------- 真实数据：market-monitor 仓库的 api/data.json（由 fetch_data.py 每日收盘抓取） ---------- */
+  const DATA_URL = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';
+  const FALLBACK = 'api/data.json';   // white-dashbord 本地兜底
   const $ = s => document.querySelector(s);
-  const rnd = (a,b)=>a+Math.random()*(b-a);
-  const walk = (v,step,min,max)=>{ v += rnd(-step,step); return Math.max(min,Math.min(max,v)); };
-  function genSeries(n, base, vol){
-    const a=[]; let v=base;
-    for(let i=0;i<n;i++){ v += rnd(-vol,vol); a.push(v); }
-    return a;
+  const yi = v => (v||0) / 1e8;        // 元 -> 亿
+  let DATA = null;
+  let maxAbsV = 1;
+  const bubbleMap = {};
+
+  async function loadData(){
+    let src = 'market-monitor';
+    try{
+      const r = await fetch(DATA_URL, {cache:'no-store'});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      DATA = await r.json();
+    }catch(e){
+      try{
+        const r2 = await fetch(FALLBACK + '?t=' + Date.now());
+        if(!r2.ok) throw new Error('HTTP '+r2.status);
+        DATA = await r2.json(); src = 'white-dashbord(本地)';
+      }catch(e2){
+        $('#clock').textContent = '数据加载失败：' + e2.message;
+        return;
+      }
+    }
+    renderAll();
+    const t = new Date();
+    $('#clock').textContent = '数据更新于 ' + (DATA.updated || '—') + ' · 拉取于 ' + t.toTimeString().slice(0,8);
   }
-  function spark(arr, w, h, color){
-    const min=Math.min(...arr), max=Math.max(...arr), rng=(max-min)||1;
-    const pts = arr.map((v,i)=>{
-      const x = (i/(arr.length-1))*w;
-      const y = h - ((v-min)/rng)*(h-6) - 3;
-      return x.toFixed(1)+','+y.toFixed(1);
-    }).join(' ');
-    return `<svg class="ispark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-      <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6"
-        stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+
+  function renderAll(){
+    if(!DATA) return;
+    renderIndices(); renderSectors(); renderGold(); renderBubbles();
   }
 
   /* ---------- M1 大盘指数 ---------- */
-  const indices = [
-    {name:'上证指数', code:'SH', value:3215.67, chg:0.82,  hist:genSeries(22,3212,7)},
-    {name:'纳斯达克', code:'IXIC', value:17345.20, chg:-0.45, hist:genSeries(22,17380,38)},
-    {name:'恒生科技', code:'HSTECH', value:4087.35, chg:1.36, hist:genSeries(22,4072,16)},
-  ];
-  const idxBox = $('#indices');
-  indices.forEach((d,i)=>{
-    const el=document.createElement('div'); el.className='icard';
-    el.innerHTML=`<div class="row1"><span class="iname">${d.name}</span><span class="icode">${d.code}</span></div>
-      <div class="ival mono">${d.value.toFixed(2)}</div>
-      <div class="ichg mono" id="ichg${i}"></div>
-      <div id="ispark${i}"></div>`;
-    idxBox.appendChild(el);
-  });
+  function magnitudeBar(pct){
+    const up = pct>=0, w = Math.min(Math.abs(pct)*16, 150);
+    return `<div style="height:6px;border-radius:3px;background:${up?'var(--red)':'var(--green)'};width:${w}px;margin-top:10px;opacity:.85"></div>`;
+  }
   function renderIndices(){
-    indices.forEach((d,i)=>{
-      const up = d.chg>=0;
-      $('#indices').children[i].querySelector('.ival').textContent = d.value.toFixed(2);
-      const c = $('#ichg'+i);
-      c.className = 'ichg mono ' + (up?'up':'down');
-      c.textContent = (up?'▲ +':'▼ ') + d.chg.toFixed(2) + '%';
-      $('#ispark'+i).innerHTML = spark(d.hist, 360, 36, up?'#F43F5E':'#10B981');
+    const idx = DATA.indices || {};
+    const box = $('#indices'); box.innerHTML = '';
+    Object.entries(idx).forEach(([code, d])=>{
+      const up = (d.pct||0) >= 0;
+      const el = document.createElement('div'); el.className = 'icard';
+      el.innerHTML = `<div class="row1"><span class="iname">${d.name||code}</span><span class="icode">${code}</span></div>
+        <div class="ival mono">${Number(d.price||0).toFixed(2)}</div>
+        <div class="ichg mono ${up?'up':'down'}">${(up?'▲ +':'▼ ') + Number(d.pct||0).toFixed(2)}%</div>
+        ${magnitudeBar(d.pct||0)}`;
+      box.appendChild(el);
     });
+    if(!Object.keys(idx).length) box.innerHTML = '<div class="icard"><div class="iname">指数数据暂缺</div><div class="note" style="margin-top:8px">AKShare 东财接口今日未返回，将随下次抓取恢复</div></div>';
   }
 
   /* ---------- M2 板块异动 ---------- */
-  const sectors = [
-    {name:'半导体', chg:2.84, inflow:true},
-    {name:'芯片', chg:2.31, inflow:true},
-    {name:'CPO', chg:1.97, inflow:true},
-    {name:'科创创业AI', chg:1.62, inflow:true},
-    {name:'机器人', chg:1.28, inflow:true},
-    {name:'PCB', chg:1.05, inflow:true},
-    {name:'细分化工', chg:-0.74, inflow:false},
-    {name:'新能源电池', chg:-1.12, inflow:false},
-    {name:'恒生科技', chg:-0.63, inflow:false},
-    {name:'创新药', chg:-0.91, inflow:false},
-    {name:'锂矿', chg:-1.46, inflow:false},
-  ];
-  const secBox = $('#sectors');
-  sectors.forEach((d,i)=>{
-    const el=document.createElement('div');
-    el.className='stile'+(d.inflow?' hot':'');
-    el.innerHTML=`<div class="sname">${d.name}</div>
-      <div class="schg mono" id="schg${i}"></div>
-      <div class="stag ${d.inflow?'hot':''}" id="stag${i}">${d.inflow?'吸筹 · 上涨':'净流出'}</div>`;
-    secBox.appendChild(el);
-  });
   function renderSectors(){
-    sectors.forEach((d,i)=>{
-      const up=d.chg>=0;
-      const c=$('#schg'+i);
-      c.className='schg mono '+(up?'up':'down');
-      c.textContent=(up?'+':'')+d.chg.toFixed(2)+'%';
+    const flows = (DATA.plateFlows || []).slice().sort((a,b)=>Math.abs(b.pct||0)-Math.abs(a.pct||0));
+    const box = $('#sectors'); box.innerHTML = '';
+    flows.forEach(d=>{
+      const up = (d.pct||0) >= 0;
+      const inflow = (d.net||0) >= 0;
+      const el = document.createElement('div'); el.className = 'stile' + (up?' hot':'');
+      el.innerHTML = `<div class="sname">${d.name}</div>
+        <div class="schg mono ${up?'up':'down'}">${(up?'+':'') + Number(d.pct||0).toFixed(2)}%</div>
+        <div class="stag ${up?'hot':''}">${up?'上涨':'下跌'} · ${inflow?'吸筹':'出货'}</div>`;
+      box.appendChild(el);
     });
+    if(!flows.length) box.innerHTML = '<div class="stile"><div class="sname">板块数据暂缺</div></div>';
   }
 
   /* ---------- M3 黄金 ---------- */
-  const gold = {price:2385.60, chg:0.38, hist:genSeries(14,2372,7)};
-  function renderGold(){
-    $('#goldPrice').textContent = gold.price.toFixed(2);
-    const up = gold.chg>=0;
-    const c=$('#goldChg'); c.className='gchg mono '+(up?'up':'down');
-    c.textContent=(up?'▲ +':'▼ ')+gold.chg.toFixed(2)+'% 今日';
-    $('#goldChart').innerHTML = goldChartSVG(gold.hist, 560, 240);
-  }
-  function goldChartSVG(hist, w, h){
-    const min=Math.min(...hist), max=Math.max(...hist), rng=(max-min)||1;
-    const pad=14;
-    const X = i => pad + (i/(hist.length-1))*(w-2*pad);
-    const Y = v => h-pad - ((v-min)/rng)*(h-2*pad);
-    const pts = hist.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' ');
-    // 预测：沿末端趋势外推 5 点
-    const n=hist.length, last=hist[n-1], prev=hist[n-2];
-    const slope=(last-prev)/((rng)*0)+ (last-prev); // 简化斜率
-    let pv=last, pred=[];
-    for(let i=1;i<=5;i++){ pv += (last-prev)*0.6 + rnd(-3,3); pred.push(pv); }
-    const allX = hist.length+pred.length-1;
-    const Xp = i => pad + (i/(allX-1))*(w-2*pad);
-    const predPts = pred.map((v,i)=>Xp(n-1+i+1).toFixed(1)+','+Y(Math.max(min,Math.min(max,v))).toFixed(1)).join(' ');
-    const areaPts = `M ${X(0).toFixed(1)} ${(h-pad).toFixed(1)} L ` +
-      hist.map((v,i)=>X(i).toFixed(1)+','+Y(v).toFixed(1)).join(' L ') +
-      ` L ${X(n-1).toFixed(1)} ${(h-pad).toFixed(1)} Z`;
-    return `<svg width="100%" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-      <defs><linearGradient id="gg" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="#F5B301" stop-opacity="0.35"/>
-        <stop offset="100%" stop-color="#F5B301" stop-opacity="0"/></linearGradient></defs>
-      <path d="${areaPts}" fill="url(#gg)"/>
-      <polyline points="${pts}" fill="none" stroke="#F5B301" stroke-width="2" stroke-linejoin="round"/>
-      <polyline points="${pts.split(' ').pop()+' '+predPts}" fill="none" stroke="#F5B301"
-        stroke-width="2" stroke-dasharray="5 4" opacity="0.7"/>
+  function goldBar(pct){
+    const up = pct>=0, w = Math.min(Math.abs(pct)*40, 240), col = up?'#F43F5E':'#10B981';
+    const x = up ? 280 : 280 - w;
+    return `<svg width="100%" height="120" viewBox="0 0 560 120" preserveAspectRatio="none" style="max-width:560px">
+      <line x1="0" y1="60" x2="560" y2="60" stroke="#333344" stroke-width="1"/>
+      <rect x="${x}" y="54" width="${w}" height="12" rx="6" fill="${col}" opacity="0.85"/>
     </svg>`;
   }
+  function renderGold(){
+    const g = DATA.gold || {};
+    const usdUp = (g.usd_pct||0) >= 0, cnyUp = (g.cny_pct||0) >= 0;
+    $('#goldPrice').textContent = Number(g.usd||0).toFixed(2);
+    const c = $('#goldChg'); c.className = 'gchg mono ' + (usdUp?'up':'down');
+    c.textContent = (usdUp?'▲ +':'▼ ') + Number(g.usd_pct||0).toFixed(2) + '%';
+    $('#goldCNY').textContent = Number(g.cny||0).toFixed(2);
+    const cc = $('#goldCNYChg'); cc.className = 'gchg mono ' + (cnyUp?'up':'down');
+    cc.textContent = (cnyUp?'▲ +':'▼ ') + Number(g.cny_pct||0).toFixed(2) + '%';
+    $('#goldChart').innerHTML = goldBar(g.usd_pct||0);
+  }
 
-  /* ---------- M4 气泡图 ---------- */
-  const red = [
-    {name:'半导体', v:42.3},{name:'芯片', v:31.5},{name:'CPO', v:25.8},
-    {name:'科创创业AI', v:20.1},{name:'机器人', v:16.4},{name:'PCB', v:13.7},
-  ];
-  const green = [
-    {name:'锂矿', v:-36.8},{name:'新能源电池', v:-22.1},{name:'细分化工', v:-18.5},
-    {name:'恒生科技', v:-12.3},{name:'创新药', v:-9.8},
-  ];
+  /* ---------- M4 气泡图（真实资金流净额） ---------- */
   const panel = $('#panel');
-  const SCALE = 9.85;
-  const radius = v => Math.max(28, SCALE*Math.sqrt(Math.abs(v)));
-  function makeBubble(d, group){
-    const el=document.createElement('div'); el.className='bubble '+group;
-    el.innerHTML='<span class="name"></span><span class="amt"></span>';
-    panel.appendChild(el); d.el=el; d.group=group;
-  }
-  red.forEach(d=>makeBubble(d,'red'));
-  green.forEach(d=>makeBubble(d,'green'));
-  function layoutBubbles(group, list){
-    const W=panel.clientWidth, cx=W/2, cy=group==='red'?130:390, margin=70;
-    const sorted=[...list].sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
-    const n=sorted.length, gap=Math.min(215,(W-2*margin)/n);
-    sorted.forEach((d,i)=>{
-      const r=radius(d.v);
-      let x = i===0 ? cx : cx + ((i%2===1?-1:1))*Math.ceil(i/2)*gap;
-      x=Math.max(margin,Math.min(W-margin,x));
-      d.el.style.width=(r*2)+'px'; d.el.style.height=(r*2)+'px';
-      d.el.style.left=(x-r)+'px'; d.el.style.top=(cy-r)+'px';
-      d.el.querySelector('.name').textContent=d.name;
-      d.el.querySelector('.amt').textContent=(d.v>=0?'+':'-')+Math.abs(d.v).toFixed(1)+'亿';
-    });
-  }
   function renderBubbles(){
-    [...red,...green].forEach(d=>{
-      d.v=walk(d.v,4.2,6,48);
-      if(d.group==='red'&&d.v<6) d.v=rnd(6,8);
-      if(d.group==='green'&&d.v>-6) d.v=-rnd(6,8);
+    const flows = (DATA.plateFlows || []).map(d=>({name:d.name, v:yi(d.net)}));
+    maxAbsV = Math.max(1, ...flows.map(d=>Math.abs(d.v)));
+    const red = [], green = [];
+    flows.forEach(d=>{
+      let b = bubbleMap[d.name];
+      if(!b){ b = {name:d.name, el:document.createElement('div')}; b.el.className='bubble'; b.el.innerHTML='<span class="name"></span><span class="amt"></span>'; panel.appendChild(b.el); bubbleMap[d.name]=b; }
+      b.v = d.v;
+      (d.v >= 0 ? red : green).push(b);
     });
-    layoutBubbles('red',red); layoutBubbles('green',green);
+    red.forEach(b=> b.el.className = 'bubble red');
+    green.forEach(b=> b.el.className = 'bubble green');
+    layout('red', red); layout('green', green);
+  }
+  function layout(group, list){
+    const W = panel.clientWidth, cx = W/2, cy = group==='red'?130:390, margin = 70;
+    const sorted = [...list].sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+    const n = sorted.length, gap = Math.min(215, (W - 2*margin) / Math.max(n,1));
+    const radius = v => Math.max(26, 110 * Math.sqrt(Math.abs(v) / maxAbsV));
+    sorted.forEach((b,i)=>{
+      const r = radius(b.v);
+      let x = i===0 ? cx : cx + ((i%2===1?-1:1)) * Math.ceil(i/2) * gap;
+      x = Math.max(margin, Math.min(W - margin, x));
+      b.el.style.width = (r*2)+'px'; b.el.style.height = (r*2)+'px';
+      b.el.style.left = (x-r)+'px'; b.el.style.top = (cy-r)+'px';
+      b.el.querySelector('.name').textContent = b.name;
+      b.el.querySelector('.amt').textContent = (b.v>=0?'+':'-') + Math.abs(b.v).toFixed(1) + '亿';
+    });
   }
 
-  /* ---------- 主循环 ---------- */
-  function tick(){
-    indices.forEach(d=>{
-      d.value = walk(d.value, d.value*0.0009, d.value*0.97, d.value*1.03);
-      d.chg = walk(d.chg, 0.12, -2.5, 2.8);
-      d.hist.push(d.value); d.hist.shift();
-    });
-    sectors.forEach(d=>{ d.chg = walk(d.chg, 0.18, -2.6, 3.2); });
-    gold.price = walk(gold.price, 1.4, 2300, 2460);
-    gold.chg = walk(gold.chg, 0.08, -1.5, 1.8);
-    gold.hist.push(gold.price); gold.hist.shift();
-    renderIndices(); renderSectors(); renderGold(); renderBubbles();
-    const t=new Date();
-    $('#clock').textContent='最近更新 '+t.toTimeString().slice(0,8);
-  }
-  tick();
-  setInterval(tick, 2200);
-  setInterval(()=>{ const t=new Date(); $('#clock').textContent='最近更新 '+t.toTimeString().slice(0,8); }, 1000);
-  window.addEventListener('resize', ()=>{ layoutBubbles('red',red); layoutBubbles('green',green); });
+  /* ---------- 启动：拉取真实数据，并每 60s 轮询最新收盘数据 ---------- */
+  loadData();
+  setInterval(loadData, 60000);
+  window.addEventListener('resize', ()=>{ if(DATA){ layout('red', Object.values(bubbleMap).filter(b=>b.el.classList.contains('red'))); layout('green', Object.values(bubbleMap).filter(b=>b.el.classList.contains('green'))); } });
 </script>
 </body>
 </html>
