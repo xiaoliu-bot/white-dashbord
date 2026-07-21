@@ -2,9 +2,10 @@
 """
 每日收盘数据抓取 → api/data.json + api/history/YYYY-MM-DD.json
 数据源：
-  - Tushare（A股指数：上证/沪深300/创业板，稳定优先）
-  - AKShare（东财数据，作为 Tushare 失败时的兜底）
-  - 腾讯接口（恒生科技）
+  - 腾讯 qt.gtimg.cn（上证/沪深300/创业板/恒生科技，CI 中最稳定，主用）
+  - Tushare pro（best-effort，受积分/频限限制，限频时跳过；用户提供的 token 走此路径）
+  - Tushare legacy get_hist_data（Tushare pro 失败时的二级兜底，需交易所前缀）
+  - AKShare（东财，作为以上都失败时的最后兜底，加重试）
   - Gold-API.com（国际金价，无需 key）
   - AKShare stock_fund_flow_industry / concept（板块资金流）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
@@ -85,63 +86,84 @@ def fetch_indices_tushare(token):
         return {}
 
 def fetch_indices():
-    """上证/沪深300/创业板（Tushare→AKShare兜底） + 恒生科技（腾讯）"""
-    result = fetch_indices_tushare(os.environ.get('TUSHARE_TOKEN'))
+    """指数来源（优先级）：Tushare pro（best-effort，限频时跳过）→ 腾讯 qt.gtimg.cn（CI 稳定主用）→ AKShare（兜底）。
+    腾讯接口在 CI 中稳定可用（恒生科技已验证），故 A 股三大指数也统一走腾讯一次请求拿全。
+    """
+    result = fetch_indices_tushare(os.environ.get('TUSHARE_TOKEN'))  # best-effort，限频时返回 {}
     covered = set(result.keys())
 
-    # 上证、沪深300（东财上证系列指数兜底）
-    try:
-        df = ak.stock_zh_index_spot_em(symbol='上证系列指数')
-        for code, (name,) in {'000001': ('上证指数',), '000300': ('沪深300',)}.items():
-            if code in covered:
-                continue
-            row = df[df['代码'] == code]
-            if not row.empty:
-                r = row.iloc[0]
-                result[code] = {
-                    'name': name,
-                    'price': round(float(r['最新价'] or 0), 2),
-                    'chg': round(float(r['涨跌额'] or 0), 2),
-                    'pct': round(float(r['涨跌幅'] or 0), 2),
-                }
-    except Exception as e:
-        print(f"  ❌ 指数(AKShare补充)失败: {e}")
-
-    # 创业板（深证系列指数兜底）
-    try:
-        df2 = ak.stock_zh_index_spot_em(symbol='深证系列指数')
-        if '399006' not in result:
-            cy = df2[df2['名称'] == '创业板指']
-            if not cy.empty:
-                r = cy.iloc[0]
-                result['399006'] = {
-                    'name': '创业板指',
-                    'price': round(float(r['最新价'] or 0), 2),
-                    'chg': round(float(r['涨跌额'] or 0), 2),
-                    'pct': round(float(r['涨跌幅'] or 0), 2),
-                }
-    except Exception as e:
-        print(f"  ❌ 创业板(AKShare补充)失败: {e}")
-
-    # 恒生科技（腾讯接口）
+    # 腾讯 qt.gtimg.cn：上证/沪深300/创业板/恒生科技（一次请求，CI 稳定）
+    tencent = {
+        '000001': ('上证指数', 'sh000001'),
+        '000300': ('沪深300',  'sh000300'),
+        '399006': ('创业板指',  'sz399006'),
+        'HSTECH': ('恒生科技', 'hkHSTECH'),
+    }
     try:
         import urllib.request, re
+        codes = ','.join(v[1] for v in tencent.values())
         req = urllib.request.Request(
-            "https://qt.gtimg.cn/q=hkHSTECH",
+            f"https://qt.gtimg.cn/q={codes}",
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com"})
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             content = r.read().decode('gbk', errors='replace')
-        m = re.search(r'"([^"]+)"', content)
-        if m:
+        for line in content.split(';'):
+            m = re.search(r'"([^"]+)"', line)
+            if not m:
+                continue
             p = m.group(1).split('~')
-            price = float(p[3]) if p[3] else 0
-            prev = float(p[4]) if p[4] else price
-            chg = float(p[32]) if p[32] else 0
-            pct = round(chg / prev * 100, 2) if prev else 0
-            result['HSTECH'] = {'name': '恒生科技', 'price': round(price, 2), 'chg': round(chg, 2), 'pct': pct}
-            print(f"  ✅ 恒生科技: {price} ({pct}%)")
+            if len(p) < 33 or not p[1]:
+                continue
+            gcode = p[1]
+            for key, (name, tcode) in tencent.items():
+                if tcode == gcode:
+                    if key in covered:
+                        break  # Tushare 已给到，优先保留
+                    try:
+                        price = float(p[3]) if p[3] else 0
+                        prev = float(p[4]) if p[4] else price
+                        chg = float(p[32]) if p[32] else 0
+                        pct = round(chg / prev * 100, 2) if prev else 0
+                        result[key] = {'name': name, 'price': round(price, 2),
+                                       'chg': round(chg, 2), 'pct': pct}
+                        print(f"  ✅ 腾讯 {name}: {price} ({pct}%)")
+                    except Exception as e:
+                        print(f"  · 腾讯 {name} 解析失败: {e}")
+                    break
     except Exception as e:
-        print(f"  ❌ 恒生科技: {e}")
+        print(f"  ❌ 腾讯指数接口失败: {e}")
+
+    # AKShare 兜底（东财，加重试；CI 中偶发 Connection aborted）
+    ak_map = {'000001': '上证指数', '000300': '沪深300', '399006': '创业板指'}
+    for attempt in range(3):
+        missing = [c for c in ak_map if c not in result]
+        if not missing:
+            break
+        try:
+            df = ak.stock_zh_index_spot_em(symbol='上证系列指数')
+            for code in missing:
+                if code in ('000001', '000300'):
+                    row = df[df['代码'] == code]
+                    if not row.empty:
+                        rr = row.iloc[0]
+                        result[code] = {'name': ak_map[code],
+                                        'price': round(float(rr['最新价'] or 0), 2),
+                                        'chg': round(float(rr['涨跌额'] or 0), 2),
+                                        'pct': round(float(rr['涨跌幅'] or 0), 2)}
+            if '399006' not in result:
+                df2 = ak.stock_zh_index_spot_em(symbol='深证系列指数')
+                cy = df2[df2['名称'] == '创业板指']
+                if not cy.empty:
+                    rr = cy.iloc[0]
+                    result['399006'] = {'name': '创业板指',
+                                        'price': round(float(rr['最新价'] or 0), 2),
+                                        'chg': round(float(rr['涨跌额'] or 0), 2),
+                                        'pct': round(float(rr['涨跌幅'] or 0), 2)}
+            print(f"  ✅ AKShare 补充命中: {[c for c in ak_map if c in result]}")
+            break
+        except Exception as e:
+            print(f"  · AKShare 补充尝试 {attempt+1} 失败: {e}")
+            time.sleep(2)
     return result
 
 # === 黄金 ===
