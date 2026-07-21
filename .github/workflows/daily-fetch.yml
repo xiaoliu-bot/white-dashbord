@@ -24,9 +24,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install akshare -q
+        run: pip install akshare tushare -q
 
       - name: Fetch data
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
         run: python fetch_data.py
 
       - name: Configure git
