@@ -19,34 +19,65 @@ import datetime as _dt
 
 # === 指数（Tushare 优先，AKShare/腾讯兜底） ===
 def fetch_indices_tushare(token):
-    """用 Tushare 旧版免费接口拉 A 股三大指数（不受 pro 积分/频率限制）"""
+    """用 Tushare 拉 A 股三大指数。
+    优先 pro.index_daily（用户提供的 token）；失败回退 legacy get_hist_data（需交易所前缀 sh/sz）。
+    仍为空时由 fetch_indices() 里的 AKShare / 腾讯兜底。
+    """
     try:
         import tushare as ts
         if token:
             try: ts.set_token(token)
             except Exception: pass
-        mapping = {
-            '000001': ('000001', '上证指数'),
-            '000300': ('000300', '沪深300'),
-            '399006': ('399006', '创业板指'),
-        }
         end = _dt.date.today().strftime('%Y-%m-%d')
         start = (_dt.date.today() - _dt.timedelta(days=10)).strftime('%Y-%m-%d')
+        # 输出 key -> (名称, pro代码, legacy代码)
+        spec = {
+            '000001': ('上证指数', '000001.SH', 'sh000001'),
+            '000300': ('沪深300',  '000300.SH', 'sh000300'),
+            '399006': ('创业板指',  '399006.SZ', 'sz399006'),
+        }
         out = {}
-        for key, (code, name) in mapping.items():
-            try:
-                df = ts.get_hist_data(code, start=start, end=end, retry_count=2)
-                if df is not None and not df.empty:
-                    row = df.iloc[-1]
-                    close = float(row['close'])
-                    pct = round(float(row.get('pct_change', 0) or 0), 2)
-                    chg = round(float(row.get('price_change', 0) or 0), 2)
-                    out[key] = {'name': name, 'price': round(close, 2), 'chg': chg, 'pct': pct}
-                    print(f"  ✅ Tushare(legacy) {name}: {close} ({pct}%)")
-                else:
-                    print(f"    · Tushare(legacy) {name}: 空数据")
-            except Exception as e:
-                print(f"    · Tushare(legacy) {name} 失败: {e}")
+        pro = None
+        try:
+            pro = ts.pro_api()
+        except Exception as e:
+            print(f"  · Tushare pro 初始化失败: {e}")
+        for key, (name, pro_code, legacy_code) in spec.items():
+            row = None
+            # 1) pro.index_daily（用户 token 拉市场数据的主路径）
+            if pro is not None:
+                try:
+                    df = pro.index_daily(ts_code=pro_code,
+                                         start_date=start.replace('-', ''),
+                                         end_date=end.replace('-', ''))
+                    if df is not None and not df.empty:
+                        r = df.sort_values('trade_date').iloc[-1]
+                        row = {
+                            'price': round(float(r['close']), 2),
+                            'chg': round(float(r.get('change') or 0), 2),
+                            'pct': round(float(r.get('pct_chg') or 0), 2),
+                        }
+                        print(f"  ✅ Tushare pro {name}: {row['price']} ({row['pct']}%)")
+                except Exception as e:
+                    print(f"  · Tushare pro {name} 失败: {str(e)[:80]}")
+                time.sleep(3)  # 规避 pro 频率限制（低积分约 1 次/分）
+            # 2) legacy get_hist_data 兜底（必须带交易所前缀）
+            if row is None:
+                try:
+                    df = ts.get_hist_data(legacy_code, start=start, end=end, retry_count=1)
+                    if df is not None and not df.empty:
+                        r = df.iloc[-1]
+                        row = {
+                            'price': round(float(r['close']), 2),
+                            'chg': round(float(r.get('price_change') or 0), 2),
+                            'pct': round(float(r.get('pct_change') or 0), 2),
+                        }
+                        print(f"  ✅ Tushare legacy {name}: {row['price']} ({row['pct']}%)")
+                except Exception as e:
+                    print(f"  · Tushare legacy {name} 失败: {str(e)[:80]}")
+            if row is not None:
+                row['name'] = name
+                out[key] = row
         print(f"  ✅ Tushare 指数: {list(out.keys())}")
         return out
     except Exception as e:
