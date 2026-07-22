@@ -1,6 +1,6 @@
 {
   "updated": "2026-07-22",
-  "time": "10:09:43",
+  "time": "10:33:34",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -22,10 +22,10 @@
     }
   },
   "gold": {
-    "usd": 4117.7,
-    "usd_pct": 0.15,
-    "cny": 897.15,
-    "cny_pct": 0.15,
+    "usd": 4119.5,
+    "usd_pct": 0.04,
+    "cny": 897.54,
+    "cny_pct": 0.04,
     "fx": 6.7767
   },
   "plateFlows": [
@@ -140,7 +140,40 @@
       "source": "行业"
     }
   ],
-  "citic": {},
+  "citic": {
+    "date": "20260721",
+    "contracts": {
+      "IF": {
+        "label": "沪深300",
+        "long": 32886,
+        "short": 45733,
+        "net": -12847
+      },
+      "IC": {
+        "label": "中证500",
+        "long": 51207,
+        "short": 59651,
+        "net": -8444
+      },
+      "IH": {
+        "label": "上证50",
+        "long": 15134,
+        "short": 25621,
+        "net": -10487
+      },
+      "IM": {
+        "label": "中证1000",
+        "long": 74334,
+        "short": 109122,
+        "net": -34788
+      }
+    },
+    "total": {
+      "long": 173561,
+      "short": 240127,
+      "net": -66566
+    }
+  },
   "stale": {
     "indices": false,
     "gold": false,
