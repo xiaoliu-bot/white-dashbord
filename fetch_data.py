@@ -86,19 +86,16 @@ def fetch_indices_tushare(token):
         return {}
 
 def fetch_indices():
-    """指数来源（优先级）：Tushare pro（best-effort，限频时跳过）→ 腾讯 qt.gtimg.cn（CI 稳定主用）→ AKShare（兜底）。
-    腾讯接口在 CI 中稳定可用（恒生科技已验证），故 A 股三大指数也统一走腾讯一次请求拿全。
+    """大盘指数（5 分钟级实时）：腾讯 qt.gtimg.cn 一次请求拿全。
+    仅保留看板所需的 上证指数 / 纳指(Nasdaq, usIXIC) / 恒生科技。
+    注：纳指为美股，A 股交易时段返回上一美股收盘值，属正常。
     """
-    result = fetch_indices_tushare(os.environ.get('TUSHARE_TOKEN'))  # best-effort，限频时返回 {}
-    covered = set(result.keys())
-
-    # 腾讯 qt.gtimg.cn：上证/沪深300/创业板/恒生科技（一次请求，CI 稳定）
     tencent = {
         '000001': ('上证指数', 'sh000001'),
-        '000300': ('沪深300',  'sh000300'),
-        '399006': ('创业板指',  'sz399006'),
+        'NDX':    ('纳指',     'usIXIC'),
         'HSTECH': ('恒生科技', 'hkHSTECH'),
     }
+    result = {}
     try:
         import urllib.request, re
         codes = ','.join(v[1] for v in tencent.values())
@@ -111,59 +108,25 @@ def fetch_indices():
             m = re.search(r'v_(\w+)="([^"]+)"', line)
             if not m:
                 continue
-            gcode = m.group(1)            # sh000001 / sh000300 / sz399006 / hkHSTECH
+            gcode = m.group(1)            # sh000001 / usIXIC / hkHSTECH
             p = m.group(2).split('~')
-            if len(p) < 33:
+            if len(p) < 10:
                 continue
             for key, (name, tcode) in tencent.items():
                 if tcode == gcode:
-                    if key in covered:
-                        break  # Tushare 已给到，优先保留
                     try:
                         price = float(p[3]) if p[3] else 0
                         prev = float(p[4]) if p[4] else price
-                        chg = float(p[32]) if p[32] else 0
-                        pct = round(chg / prev * 100, 2) if prev else 0
+                        pct = round((price - prev) / prev * 100, 2) if prev else 0
+                        chg = round(price - prev, 2)
                         result[key] = {'name': name, 'price': round(price, 2),
-                                       'chg': round(chg, 2), 'pct': pct}
+                                       'chg': chg, 'pct': pct}
                         print(f"  ✅ 腾讯 {name}: {price} ({pct}%)")
                     except Exception as e:
                         print(f"  · 腾讯 {name} 解析失败: {e}")
                     break
     except Exception as e:
         print(f"  ❌ 腾讯指数接口失败: {e}")
-
-    # AKShare 兜底（东财，加重试；CI 中偶发 Connection aborted）
-    ak_map = {'000001': '上证指数', '000300': '沪深300', '399006': '创业板指'}
-    for attempt in range(3):
-        missing = [c for c in ak_map if c not in result]
-        if not missing:
-            break
-        try:
-            df = ak.stock_zh_index_spot_em(symbol='上证系列指数')
-            for code in missing:
-                if code in ('000001', '000300'):
-                    row = df[df['代码'] == code]
-                    if not row.empty:
-                        rr = row.iloc[0]
-                        result[code] = {'name': ak_map[code],
-                                        'price': round(float(rr['最新价'] or 0), 2),
-                                        'chg': round(float(rr['涨跌额'] or 0), 2),
-                                        'pct': round(float(rr['涨跌幅'] or 0), 2)}
-            if '399006' not in result:
-                df2 = ak.stock_zh_index_spot_em(symbol='深证系列指数')
-                cy = df2[df2['名称'] == '创业板指']
-                if not cy.empty:
-                    rr = cy.iloc[0]
-                    result['399006'] = {'name': '创业板指',
-                                        'price': round(float(rr['最新价'] or 0), 2),
-                                        'chg': round(float(rr['涨跌额'] or 0), 2),
-                                        'pct': round(float(rr['涨跌幅'] or 0), 2)}
-            print(f"  ✅ AKShare 补充命中: {[c for c in ak_map if c in result]}")
-            break
-        except Exception as e:
-            print(f"  · AKShare 补充尝试 {attempt+1} 失败: {e}")
-            time.sleep(2)
     return result
 
 # === 黄金 ===
@@ -391,69 +354,170 @@ def fetch_plate_data():
 
     return all_flows
 
+# === 中信期货 股指期货多空单（CFFEX 前20会员持仓）===
+def fetch_citic_futures():
+    """中信期货在股指期货(IF/IC/IH/IM)的多空单（前20会员持仓）。
+    来源：AKShare get_cffex_rank_table（中金所每日持仓排名，约 16:30 发布）。best-effort。
+    返回 {date, contracts:{IF:{label,long,short,net},...}, total:{long,short,net}}。
+    """
+    try:
+        import akshare as ak
+        from datetime import date as _d, timedelta as _td
+        day = None
+        for i in range(0, 6):
+            d = _d.today() - _td(days=i)
+            if d.weekday() < 5:
+                day = d.strftime('%Y%m%d')
+                break
+        if not day:
+            return {}
+        print(f"  · 中信期指：取中金所持仓排名 {day}")
+        tbl = ak.get_cffex_rank_table(date=day)   # dict: symbol -> DataFrame
+        targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
+        out = {'date': day, 'contracts': {}, 'total': {'long': 0, 'short': 0, 'net': 0}}
+        for sym, label in targets.items():
+            df = tbl.get(sym)
+            if df is None or (hasattr(df, 'empty') and df.empty):
+                continue
+            cols = list(df.columns)
+            # 兼容中英文列名找「会员名称」与「多/空持仓」
+            name_col = None
+            for c in cols:
+                s = str(c)
+                if any(k in s for k in ['party', 'Party', '会员', '名称', 'name', 'Name']):
+                    name_col = c
+                    break
+            long_col = short_col = None
+            for c in cols:
+                s = str(c).lower()
+                if 'long' in s and any(k in s for k in ['open', 'interest', 'position', '买', '多']):
+                    long_col = c
+                if 'short' in s and any(k in s for k in ['open', 'interest', 'position', '卖', '空']):
+                    short_col = c
+            if name_col is None or long_col is None or short_col is None:
+                print(f"  · 中信期指 {sym} 列名未识别: {cols}")
+                continue
+            sub = df[df[name_col].astype(str).str.contains('中信', na=False)]
+            if sub.empty:
+                continue
+            long_v = float(sub[long_col].iloc[0] or 0)
+            short_v = float(sub[short_col].iloc[0] or 0)
+            out['contracts'][sym] = {'label': label, 'long': int(long_v),
+                                     'short': int(short_v), 'net': int(long_v - short_v)}
+            out['total']['long'] += int(long_v)
+            out['total']['short'] += int(short_v)
+            out['total']['net'] += int(long_v - short_v)
+        if out['contracts']:
+            print(f"  ✅ 中信期指多空 {day}: {list(out['contracts'].keys())} 总净仓 {out['total']['net']} 手")
+            return out
+        print("  · 中信期指：未取到中信持仓（可能当日尚未发布）")
+        return {}
+    except Exception as e:
+        print(f"  ❌ 中信期指多空: {e}")
+        return {}
+
 def main():
     today = datetime.date.today().strftime('%Y-%m-%d')
-    print(f"📅 抓取日期: {today}")
-    print()
+    now_iso = datetime.datetime.now().strftime('%H:%M:%S')
+    now_hm = datetime.datetime.now().strftime('%H:%M')
+    print(f"📅 抓取: {today} {now_hm}")
 
-    print("[1/3] 抓取指数...")
+    # 读取上一次快照，用于抓取失败时的兜底（5 分钟级刷新下避免瞬断导致页面空白）
+    prev = {}
+    if os.path.exists('api/data.json'):
+        try:
+            prev = json.load(open('api/data.json', encoding='utf-8'))
+        except Exception:
+            prev = {}
+
+    print("[1/4] 指数...")
     indices = fetch_indices()
-    print()
+    if not indices:
+        indices = prev.get('indices', {})
+        if indices:
+            print("  · 指数接口失败，沿用上次快照")
 
-    print("[2/3] 抓取黄金...")
+    print("[2/4] 黄金...")
     gold = fetch_gold()
-    print()
 
-    print("[3/3] 抓取板块资金流...")
+    print("[3/4] 板块资金流...")
     plate_data = fetch_plate_data()
-
-    # 组装 plateFlows
     plateFlows = []
     for plate_name in ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',
                        '新能源电池', '锂矿', 'CPO', 'PCB', '创新药']:
         d = plate_data.get(plate_name, {})
         net = d.get('net', 0)
-        # 估算散户/大户/主力比例
         zhu = int(net * 0.55)
         da = int(net * 0.28)
         san = net - zhu - da
         print(f"  {plate_name}: {d.get('行业名','?')} | {d.get('pct',0):+.2f}% | 净额:{(net/1e8):+.2f}亿 [{d.get('source','未知')}]")
         plateFlows.append({
             'name': plate_name,
-            'code': '',   # 暂不填东财代码
+            'code': '',
             'pct': d.get('pct', 0),
             '行业名': d.get('行业名', ''),
-            '散户': san,
-            '大户': da,
-            '主力': zhu,
-            'net': net,
+            '散户': san, '大户': da, '主力': zhu, 'net': net,
             'source': d.get('source', '未知'),
         })
+    if all(p.get('net', 0) == 0 for p in plateFlows) and prev.get('plateFlows'):
+        plateFlows = prev['plateFlows']
+        print("  · 板块全为 0，沿用上次快照")
     print()
+
+    print("[4/4] 中信期指多空...")
+    citic = fetch_citic_futures()
+    if not citic:
+        citic = prev.get('citic', {})
+        if citic:
+            print("  · 中信期指沿用上次快照")
 
     data = {
         'updated': today,
+        'time': now_iso,
         'indices': indices,
         'gold': gold,
         'plateFlows': plateFlows,
+        'citic': citic,
     }
 
     os.makedirs('api', exist_ok=True)
     with open('api/data.json', 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"✅ 已写入 api/data.json")
+    print("✅ 写入 api/data.json")
 
-    hist_dir = 'api/history'
+    # 历史时序：每 5 分钟追加一个快照，供网页回溯
+    hist_dir = os.path.join('api/history', today)
     os.makedirs(hist_dir, exist_ok=True)
-    hist_file = os.path.join(hist_dir, f'{today}.json')
-    with open(hist_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"✅ 已写入 {hist_file}")
+    series_file = os.path.join(hist_dir, 'series.json')
+    series = []
+    if os.path.exists(series_file):
+        try:
+            series = json.load(open(series_file, encoding='utf-8'))
+        except Exception:
+            series = []
+    series.append({'time': now_hm, 'indices': indices, 'gold': gold,
+                   'plateFlows': plateFlows, 'citic': citic})
+    with open(series_file, 'w', encoding='utf-8') as f:
+        json.dump(series, f, ensure_ascii=False, separators=(',', ':'))
 
-    print(f"\n📊 摘要:")
+    # 日期清单（供前端回溯选择）
+    dates_file = os.path.join('api/history', 'dates.json')
+    dates = []
+    if os.path.exists(dates_file):
+        try:
+            dates = json.load(open(dates_file, encoding='utf-8'))
+        except Exception:
+            dates = []
+    if today not in dates:
+        dates.append(today)
+        json.dump(sorted(dates), open(dates_file, 'w', encoding='utf-8'), ensure_ascii=False)
+
+    print(f"\n📊 摘要: 历史快照数={len(series)}")
     for k, v in indices.items():
         print(f"  {v['name']}: {v['price']} ({v['pct']}%)")
-    print(f"  黄金: {gold['usd']} USD/oz | {gold['cny']} CNY/g")
+    print(f"  黄金: {gold['usd']} USD/oz")
+    if citic:
+        print(f"  中信期指总净仓: {citic['total']['net']} 手")
 
 if __name__ == '__main__':
     main()
