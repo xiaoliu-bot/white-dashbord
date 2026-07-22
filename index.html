@@ -120,6 +120,9 @@
   .foot{margin-top:6px;font-size:12px;color:var(--faint);display:flex;justify-content:space-between;
     flex-wrap:wrap;gap:10px;border-top:1px solid var(--border);padding-top:14px;}
   .note{font-size:11px;color:#52525B;}
+  .stale-tag{display:inline-block;font-size:10px;font-weight:600;color:var(--faint);
+    border:1px solid var(--border);background:#1c1c20;border-radius:5px;padding:1px 6px;
+    margin-left:6px;letter-spacing:.3px;vertical-align:middle;}
 
   @media(max-width:900px){
     .indices{grid-template-columns:1fr;}
@@ -181,7 +184,7 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">板块异动看板</div>
-      <div class="sec-sub">板块涨跌幅 · 红涨绿跌（吸筹标红）</div>
+      <div class="sec-sub">板块涨跌幅 · 红涨绿跌（吸筹标红）<span class="stale-tag" id="plateStaleTag" style="display:none">未更新</span></div>
     </div>
     <div class="sectors" id="sectors"></div>
   </section>
@@ -195,7 +198,7 @@
     <div class="gold">
       <div class="gleft">
         <div class="gname">国际金价 (USD/oz)</div>
-        <div><span class="gprice mono" id="goldPrice">--</span> <span class="gunit">USD/oz</span></div>
+        <div><span class="gprice mono" id="goldPrice">--</span> <span class="gunit">USD/oz</span>${staleTag('gold')}</div>
         <div class="gchg mono" id="goldChg">--</div>
         <div class="gname" style="margin-top:12px">国内金价 (CNY/g)</div>
         <div><span class="gprice mono" id="goldCNY" style="font-size:24px;color:var(--gold)">--</span> <span class="gunit">元/克</span></div>
@@ -234,6 +237,9 @@
   const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';
   const HIST_BASE = 'api/history/';
   const $ = s => document.querySelector(s);
+  const PREVIEW_STALE = new URLSearchParams(location.search).get('preview') === 'stale';
+  function staleOn(mod){ return !!(DATA && DATA.stale && DATA.stale[mod]) || PREVIEW_STALE; }
+  function staleTag(mod){ return staleOn(mod) ? '<span class="stale-tag">未更新</span>' : ''; }
   const yi = v => (v||0) / 1e8;
   let DATA = null;
   let maxAbsV = 1;
@@ -288,7 +294,7 @@
     Object.entries(idx).forEach(([code, d])=>{
       const up = (d.pct||0) >= 0;
       const el = document.createElement('div'); el.className = 'icard';
-      el.innerHTML = `<div class="row1"><span class="iname">${d.name||code}</span><span class="icode">${code}</span></div>
+      el.innerHTML = `<div class="row1"><span class="iname">${d.name||code}</span><span class="icode">${code}</span>${staleTag('indices')}</div>
         <div class="ival mono">${Number(d.price||0).toFixed(2)}</div>
         <div class="ichg mono ${up?'up':'down'}">${(up?'▲ +':'▼ ') + Number(d.pct||0).toFixed(2)}%</div>
         ${magnitudeBar(d.pct||0)}`;
@@ -302,7 +308,7 @@
     const box = $('#indices');
     const el = document.createElement('div'); el.className = 'icard citic';
     if(!citic || !citic.contracts || !Object.keys(citic.contracts).length){
-      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span></div>
+      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
         <div class="ival mono">--</div><div class="ichg mono">数据暂缺（约 16:30 发布）</div>`;
       box.appendChild(el); return;
     }
@@ -310,7 +316,7 @@
     const net = t.net || 0;
     const up = net >= 0;
     const rows = Object.entries(citic.contracts).map(([sym,d])=>`${d.label} ${(d.net>=0?'+':'')+d.net}`).join('　');
-    el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span></div>
+      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
       <div class="ival mono" style="color:${up?'var(--red)':'var(--green)'}">${up?'净多':'净空'} ${net} 手</div>
       <div class="ichg mono ${up?'up':'down'}" style="font-size:12px">${rows}</div>`;
     box.appendChild(el);
@@ -330,6 +336,7 @@
       box.appendChild(el);
     });
     if(!flows.length) box.innerHTML = '<div class="stile"><div class="sname">板块数据暂缺</div></div>';
+    const pst = $('#plateStaleTag'); if(pst) pst.style.display = staleOn('plateFlows') ? 'inline-block' : 'none';
   }
 
   /* ---------- M3 黄金 ---------- */

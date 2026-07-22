@@ -511,10 +511,12 @@ def main():
             prev = {}
 
     print("[1/4] 指数...")
+    idxStale = False
     indices = fetch_indices()
     if not indices:
         indices = prev.get('indices', {})
         if indices:
+            idxStale = True
             print("  · 指数接口失败，沿用上次快照")
     # 聚宽优先覆盖 A 股指数（纳指/恒生科技聚宽无，走腾讯兜底；不新增沪深300/创业板）
     try:
@@ -531,7 +533,11 @@ def main():
         print(f"  · 聚宽索引异常: {e}")
 
     print("[2/4] 黄金...")
+    goldStale = False
     gold = fetch_gold(prev.get('gold'))
+    if not gold.get('usd') and prev.get('gold', {}).get('usd'):
+        gold = prev['gold']; goldStale = True
+        print("  · 黄金接口失败，沿用上次快照")
 
     print("[3/4] 板块资金流...")
     plate_data = fetch_plate_data()
@@ -552,16 +558,20 @@ def main():
             '散户': san, '大户': da, '主力': zhu, 'net': net,
             'source': d.get('source', '未知'),
         })
+    plateStale = False
     if all(p.get('net', 0) == 0 for p in plateFlows) and prev.get('plateFlows'):
         plateFlows = prev['plateFlows']
+        plateStale = True
         print("  · 板块全为 0，沿用上次快照")
     print()
 
     print("[4/4] 中信期指多空...")
+    citicStale = False
     citic = fetch_citic_futures()
     if not citic:
         citic = prev.get('citic', {})
         if citic:
+            citicStale = True
             print("  · 中信期指沿用上次快照")
 
     data = {
@@ -571,6 +581,8 @@ def main():
         'gold': gold,
         'plateFlows': plateFlows,
         'citic': citic,
+        'stale': {'indices': idxStale, 'gold': goldStale,
+                  'plateFlows': plateStale, 'citic': citicStale},
     }
 
     os.makedirs('api', exist_ok=True)
