@@ -242,67 +242,56 @@ def fetch_plate_data_tushare(token):
         print(f"  · Tushare pro 初始化失败: {e}")
         return {}
 
-    # 最近交易日（最多往前 7 天内找工作日），规避非交易日无数据
+    # 最近交易日（今日/昨日/前日中的前 3 个工作日），规避非交易日无数据
     trade_days = []
-    for i in range(0, 8):
+    for i in range(0, 4):
         d = _dt.date.today() - _dt.timedelta(days=i)
         if d.weekday() < 5:
             trade_days.append(d.strftime('%Y%m%d'))
+        if len(trade_days) >= 3:
+            break
 
     result = {}
 
-    # 1) plate_fund_flow（含涨跌幅，最理想）
-    for td in trade_days[:3]:
-        try:
-            df = pro.plate_fund_flow(trade_date=td, src='None')
-            if df is not None and not df.empty:
-                for _, row in df.iterrows():
-                    _match_plate(result, str(row.get('name', '')).strip(),
-                                float(row.get('net_buy', 0) or 0),
-                                0, 0, float(row.get('pct_change', 0) or 0), 'Tushare')
-                print(f"  ✅ Tushare plate_fund_flow {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
-                break
-        except Exception as e:
-            print(f"  · Tushare plate_fund_flow {td} 失败: {str(e)[:80]}")
-            time.sleep(3)
+    def _is_rate_limit(msg):
+        return ('频率超限' in msg) or ('每分钟' in msg) or ('每小时' in msg) or ('限额' in msg)
+
+    # 各接口按优先级尝试；命中即止。永久性问题（接口名错误/无权限）立即跳过，仅限频才 sleep。
+    attempts = [
+        ('plate_fund_flow',
+         lambda td: pro.plate_fund_flow(trade_date=td, src='None'),
+         lambda row: (float(row.get('net_buy', 0) or 0), 0, 0, float(row.get('pct_change', 0) or 0))),
+        ('moneyflow_industry',
+         lambda td: pro.moneyflow_industry(trade_date=td),
+         lambda row: (float(row.get('main_net_in', 0) or 0) * 1000, 0, 0, 0)),
+        ('moneyflow_concept',
+         lambda td: pro.moneyflow_concept(trade_date=td),
+         lambda row: (float(row.get('main_net_in', 0) or 0) * 1000, 0, 0, 0)),
+    ]
+
+    for iname, call, mapper in attempts:
         if result:
             break
-
-    # 2) moneyflow_industry（仅净额，千元→元）
-    if not result:
-        for td in trade_days[:3]:
+        for td in trade_days:
             try:
-                df = pro.moneyflow_industry(trade_date=td)
+                df = call(td)
                 if df is not None and not df.empty:
                     for _, row in df.iterrows():
+                        net, inflow, outflow, pct = mapper(row)
                         _match_plate(result, str(row.get('name', '')).strip(),
-                                    float(row.get('main_net_in', 0) or 0) * 1000,
-                                    0, 0, 0, 'Tushare')
-                    print(f"  ✅ Tushare moneyflow_industry {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
+                                     net, inflow, outflow, pct, 'Tushare')
+                    print(f"  ✅ Tushare {iname} {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
                     break
             except Exception as e:
-                print(f"  · Tushare moneyflow_industry {td} 失败: {str(e)[:80]}")
-                time.sleep(3)
-            if result:
-                break
-
-    # 3) moneyflow_concept（仅净额，千元→元）
-    if not result:
-        for td in trade_days[:3]:
-            try:
-                df = pro.moneyflow_concept(trade_date=td)
-                if df is not None and not df.empty:
-                    for _, row in df.iterrows():
-                        _match_plate(result, str(row.get('name', '')).strip(),
-                                    float(row.get('main_net_in', 0) or 0) * 1000,
-                                    0, 0, 0, 'Tushare')
-                    print(f"  ✅ Tushare moneyflow_concept {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
+                msg = str(e)
+                if _is_rate_limit(msg):
+                    print(f"  · Tushare {iname} {td} 限频: {msg[:60]}")
+                    time.sleep(3)
+                    continue
+                else:
+                    # 接口名错误 / 无权限等永久性问题：跳过该接口，不再试其它交易日
+                    print(f"  · Tushare {iname} 不可用（{msg[:50]}），跳过")
                     break
-            except Exception as e:
-                print(f"  · Tushare moneyflow_concept {td} 失败: {str(e)[:80]}")
-                time.sleep(3)
-            if result:
-                break
 
     if not result:
         print("  · Tushare 板块接口未命中（可能积分不足或限频），将由 AKShare 兜底")
