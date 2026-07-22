@@ -10,13 +10,28 @@
   （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
-import json, time, os, datetime
+import json, time, os, datetime, socket, threading
 import akshare as ak
 import pandas as pd
 import warnings
 warnings.filterwarnings('ignore')
 
 import datetime as _dt
+
+def _call_with_timeout(fn, timeout, default=None, label=""):
+    """在子线程执行 fn，超时未返回则按失败处理，避免 AKShare/网络调用卡死整个流水线。"""
+    box = {'v': default}
+    def _t():
+        try:
+            box['v'] = fn()
+        except Exception as e:
+            print(f"  · {label} 异常: {str(e)[:80]}")
+    th = threading.Thread(target=_t, daemon=True)
+    th.start(); th.join(timeout)
+    if th.is_alive():
+        print(f"  · {label} 超时({timeout}s)，跳过")
+        return default
+    return box['v']
 
 # === 指数（Tushare 优先，AKShare/腾讯兜底） ===
 def fetch_indices_tushare(token):
@@ -128,6 +143,45 @@ def fetch_indices():
     except Exception as e:
         print(f"  ❌ 腾讯指数接口失败: {e}")
     return result
+
+# === 聚宽 JQData（优先源，凭据走环境变量，绝不硬编码） ===
+def jq_auth():
+    """登录聚宽 JQData，返回 jq 模块；未配置/失败返回 None。"""
+    user = os.environ.get('JQ_USER'); pwd = os.environ.get('JQ_PASSWORD')
+    if not (user and pwd):
+        print("  · 未配置 JQ_USER/JQ_PASSWORD，跳过聚宽")
+        return None
+    try:
+        import jqdatasdk as jq
+        jq.auth(user, pwd)
+        print("  ✅ 聚宽登录成功")
+        return jq
+    except Exception as e:
+        print(f"  · 聚宽登录失败: {str(e)[:80]}")
+        return None
+
+def fetch_indices_jq(jq):
+    """聚宽优先提供的 A 股指数实时行情（get_price 1m 最新一根）。
+    纳指/恒生科技不在聚宽，由腾讯兜底；这里只取上证（看板展示项）。"""
+    spec = {'000001': ('上证指数', '000001.XSHG')}
+    out = {}
+    now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    for key, (name, code) in spec.items():
+        try:
+            df = _call_with_timeout(
+                lambda c=code: jq.get_price(c, end_date=now_str, count=1,
+                                            frequency='1m', fields=['close', 'pre_close']),
+                20, None, f"聚宽{name}")
+            if df is not None and not getattr(df, 'empty', True) and len(df):
+                row = df.iloc[-1]
+                price = float(row['close']); prev = float(row['pre_close'])
+                pct = round((price - prev) / prev * 100, 2) if prev else 0
+                out[key] = {'name': name, 'price': round(price, 2),
+                            'chg': round(price - prev, 2), 'pct': pct}
+                print(f"  ✅ 聚宽 {name}: {price} ({pct}%)")
+        except Exception as e:
+            print(f"  · 聚宽 {name} 解析失败: {str(e)[:80]}")
+    return out
 
 # === 黄金 ===
 def fetch_gold():
@@ -265,92 +319,93 @@ def fetch_plate_data():
     all_flows = fetch_plate_data_tushare(os.environ.get('TUSHARE_TOKEN'))  # Tushare 优先
     print(f"  · Tushare 已命中板块: {list(all_flows.keys())}")
 
-    try:
-        # 行业资金流
-        df_ind = ak.stock_fund_flow_industry(symbol="即时")
-        for _, row in df_ind.iterrows():
-            name = str(row.get('行业', '')).strip()
-            net = float(row.get('净额', 0) or 0)  # 亿元
-            inflow = float(row.get('流入资金', 0) or 0)
-            outflow = float(row.get('流出资金', 0) or 0)
-            pct = float(row.get('行业-涨跌幅', 0) or 0)
-            # 匹配持仓板块
-            for plate, keywords in PLATE_KEYWORDS.items():
-                if plate in all_flows:
-                    continue
-                for kw in keywords:
-                    if kw in name:
-                        all_flows[plate] = {
-                            'name': plate,
-                            '行业名': name,
-                            'net': round(net * 1e8),     # 转为元
-                            'inflow': round(inflow * 1e8),
-                            'outflow': round(outflow * 1e8),
-                            'pct': round(pct, 2),
-                            'source': '行业',
-                        }
-                        break
-        print(f"  ✅ 行业资金流: {len(df_ind)} 条，命中 {len(all_flows)} 个持仓板块")
-    except Exception as e:
-        print(f"  ❌ 行业资金流: {e}")
+    df_ind = _call_with_timeout(lambda: ak.stock_fund_flow_industry(symbol="即时"), 25, None, "行业资金流")
+    if df_ind is not None:
+        try:
+            for _, row in df_ind.iterrows():
+                name = str(row.get('行业', '')).strip()
+                net = float(row.get('净额', 0) or 0)  # 亿元
+                inflow = float(row.get('流入资金', 0) or 0)
+                outflow = float(row.get('流出资金', 0) or 0)
+                pct = float(row.get('行业-涨跌幅', 0) or 0)
+                # 匹配持仓板块
+                for plate, keywords in PLATE_KEYWORDS.items():
+                    if plate in all_flows:
+                        continue
+                    for kw in keywords:
+                        if kw in name:
+                            all_flows[plate] = {
+                                'name': plate,
+                                '行业名': name,
+                                'net': round(net * 1e8),     # 转为元
+                                'inflow': round(inflow * 1e8),
+                                'outflow': round(outflow * 1e8),
+                                'pct': round(pct, 2),
+                                'source': '行业',
+                            }
+                            break
+            print(f"  ✅ 行业资金流: {len(df_ind)} 条，命中 {len(all_flows)} 个持仓板块")
+        except Exception as e:
+            print(f"  ❌ 行业资金流解析: {e}")
 
-    try:
-        # 概念资金流
-        df_con = ak.stock_fund_flow_concept(symbol="即时")
-        for _, row in df_con.iterrows():
-            name = str(row.get('行业', '')).strip()
-            net = float(row.get('净额', 0) or 0)
-            inflow = float(row.get('流入资金', 0) or 0)
-            outflow = float(row.get('流出资金', 0) or 0)
-            pct = float(row.get('行业-涨跌幅', 0) or 0)
-            for plate, keywords in PLATE_KEYWORDS.items():
-                if plate in all_flows:
-                    continue
-                for kw in keywords:
-                    if kw in name or name in kw:
-                        all_flows[plate] = {
-                            'name': plate,
-                            '行业名': name,
-                            'net': round(net * 1e8),
-                            'inflow': round(inflow * 1e8),
-                            'outflow': round(outflow * 1e8),
-                            'pct': round(pct, 2),
-                            'source': '概念',
-                        }
-                        break
-        print(f"  ✅ 概念资金流: {len(df_con)} 条，总命中 {len(all_flows)} 个持仓板块")
-    except Exception as e:
-        print(f"  ❌ 概念资金流: {e}")
+    df_con = _call_with_timeout(lambda: ak.stock_fund_flow_concept(symbol="即时"), 25, None, "概念资金流")
+    if df_con is not None:
+        try:
+            for _, row in df_con.iterrows():
+                name = str(row.get('行业', '')).strip()
+                net = float(row.get('净额', 0) or 0)
+                inflow = float(row.get('流入资金', 0) or 0)
+                outflow = float(row.get('流出资金', 0) or 0)
+                pct = float(row.get('行业-涨跌幅', 0) or 0)
+                for plate, keywords in PLATE_KEYWORDS.items():
+                    if plate in all_flows:
+                        continue
+                    for kw in keywords:
+                        if kw in name or name in kw:
+                            all_flows[plate] = {
+                                'name': plate,
+                                '行业名': name,
+                                'net': round(net * 1e8),
+                                'inflow': round(inflow * 1e8),
+                                'outflow': round(outflow * 1e8),
+                                'pct': round(pct, 2),
+                                'source': '概念',
+                            }
+                            break
+            print(f"  ✅ 概念资金流: {len(df_con)} 条，总命中 {len(all_flows)} 个持仓板块")
+        except Exception as e:
+            print(f"  ❌ 概念资金流解析: {e}")
 
     # 用东财板块涨跌做补充：Tushare 已命中但缺涨跌幅(pct)的板块补 pct；完全缺失的板块估值 net
-    try:
-        spots = ak.stock_sector_spot()
-        for _, row in spots.iterrows():
-            name = str(row.get('板块名称', '')).strip()
-            pct_spot = float(row.get('涨跌幅', 0) or 0)
-            for plate, keywords in PLATE_KEYWORDS.items():
-                matched = any(kw in name for kw in keywords)
-                if not matched:
-                    continue
-                if plate in all_flows:
-                    # Tushare 已给净额：仅补缺失的涨跌幅
-                    if all_flows[plate].get('pct', 0) == 0:
-                        all_flows[plate]['pct'] = round(pct_spot, 2)
-                        all_flows[plate]['行业名'] = name
+    spots = _call_with_timeout(lambda: ak.stock_sector_spot(), 25, None, "板块涨跌")
+    if spots is not None:
+        try:
+            for _, row in spots.iterrows():
+                name = str(row.get('板块名称', '')).strip()
+                pct_spot = float(row.get('涨跌幅', 0) or 0)
+                for plate, keywords in PLATE_KEYWORDS.items():
+                    matched = any(kw in name for kw in keywords)
+                    if not matched:
+                        continue
+                    if plate in all_flows:
+                        # Tushare 已给净额：仅补缺失的涨跌幅
+                        if all_flows[plate].get('pct', 0) == 0:
+                            all_flows[plate]['pct'] = round(pct_spot, 2)
+                            all_flows[plate]['行业名'] = name
+                        break
+                    all_flows[plate] = {
+                        'name': plate,
+                        '行业名': name,
+                        'net': int(pct_spot * 3e8),  # 估算
+                        'inflow': 0,
+                        'outflow': 0,
+                        'pct': round(pct_spot, 2),
+                        'source': '板块涨跌',
+                    }
                     break
-                all_flows[plate] = {
-                    'name': plate,
-                    '行业名': name,
-                    'net': int(pct_spot * 3e8),  # 估算
-                    'inflow': 0,
-                    'outflow': 0,
-                    'pct': round(pct_spot, 2),
-                    'source': '板块涨跌',
-                }
-                break
-        print(f"  ✅ 板块涨跌补充后: {len(all_flows)} 个持仓板块")
-    except Exception as e:
-        print(f"  ❌ 板块涨跌: {e}")
+            print(f"  ✅ 板块涨跌补充后: {len(all_flows)} 个持仓板块")
+        except Exception as e:
+            print(f"  ❌ 板块涨跌解析: {e}")
 
     return all_flows
 
@@ -374,10 +429,8 @@ def fetch_citic_futures():
         targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
         for day in candidate_days:
             print(f"  · 中信期指：取中金所持仓排名 {day}")
-            try:
-                tbl = ak.get_cffex_rank_table(date=day)   # dict: symbol -> DataFrame
-            except Exception as e:
-                print(f"  · 中信期指 {day} 获取失败: {str(e)[:60]}")
+            tbl = _call_with_timeout(lambda: ak.get_cffex_rank_table(date=day), 25, None, f"中信期指 {day}")
+            if tbl is None:
                 continue
             out = {'date': day, 'contracts': {}, 'total': {'long': 0, 'short': 0, 'net': 0}}
             for sym, label in targets.items():
@@ -423,6 +476,7 @@ def fetch_citic_futures():
         return {}
 
 def main():
+    socket.setdefaulttimeout(30)   # 兜底：任何网络调用卡死都在 30s 内失败，避免整条流水线挂起
     today = datetime.date.today().strftime('%Y-%m-%d')
     now_iso = datetime.datetime.now().strftime('%H:%M:%S')
     now_hm = datetime.datetime.now().strftime('%H:%M')
@@ -442,6 +496,19 @@ def main():
         indices = prev.get('indices', {})
         if indices:
             print("  · 指数接口失败，沿用上次快照")
+    # 聚宽优先覆盖 A 股指数（纳指/恒生科技聚宽无，走腾讯兜底；不新增沪深300/创业板）
+    try:
+        _jq = _call_with_timeout(jq_auth, 25, None, "聚宽登录")
+        if _jq:
+            _jq_idx = _call_with_timeout(lambda: fetch_indices_jq(_jq), 30, {}, "聚宽指数")
+            for _k, _v in (_jq_idx or {}).items():
+                if _k in indices and _v:
+                    indices[_k] = _v
+            _cov = [k for k in (_jq_idx or {}) if k in indices]
+            if _cov:
+                print(f"  · 聚宽覆盖指数: {_cov}")
+    except Exception as e:
+        print(f"  · 聚宽索引异常: {e}")
 
     print("[2/4] 黄金...")
     gold = fetch_gold()
