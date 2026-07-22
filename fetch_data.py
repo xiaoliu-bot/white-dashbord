@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 每日收盘数据抓取 → api/data.json + api/history/YYYY-MM-DD.json
-数据源：
+数据源（所有对外 HTTP 请求统一走 _http_get：随机 UA 伪装 + 按 host 限频 + 指数退避 + 短缓存）：
 数据源优先级（板块数据优先从 Tushare 获取）：
   【指数】1) Tushare pro（用户 token，best-effort，限频时跳过）→ 2) 腾讯 qt.gtimg.cn（CI 稳定主用）→ 3) AKShare 兜底
   【板块资金流】1) Tushare 优先：pro.plate_fund_flow（含涨跌幅+净额，需积分≥2000）→ pro.moneyflow_industry（主力净流入）→ pro.moneyflow_concept（概念主力净流入）
@@ -10,10 +10,18 @@
   （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
-import json, time, os, datetime, socket, threading, urllib.request
-import akshare as ak
-import pandas as pd
+import json, time, os, datetime, socket, threading, random, urllib.request
 import warnings
+from urllib.parse import urlparse
+import ssl
+try:
+    import akshare as ak
+except Exception:
+    ak = None
+try:
+    import pandas as pd
+except Exception:
+    pd = None
 warnings.filterwarnings('ignore')
 
 import datetime as _dt
@@ -32,6 +40,95 @@ def _call_with_timeout(fn, timeout, default=None, label=""):
         print(f"  · {label} 超时({timeout}s)，跳过")
         return default
     return box['v']
+
+# === 统一伪装 + 限频 + 退避 HTTP 请求器 ===
+# 目标：所有对外 HTTP 请求都走这里，按元宝对新浪财经的建议配置，
+# 保障免费接口「稳定可用」——浏览器伪装、按 host 限速、指数退避、短缓存。
+_RATE = {}            # host -> 上次请求时间戳
+_RATE_LOCK = threading.Lock()
+_CACHE = {}           # url -> (ts, text)
+_CACHE_TTL = 60       # 同 URL 默认 60s 内复用（看板 5 分钟刷新，足够兜底）
+
+# 浏览器 UA 池：随机轮转，避免单一 UA 被识别为脚本爬虫
+_UA_POOL = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+]
+# 各 host 强制 Referer（新浪必须带 finance.sina.com.cn，否则 403/空）
+_REFERERS = {
+    "hq.sinajs.cn": "https://finance.sina.com.cn/",
+    "qt.gtimg.cn": "https://finance.qq.com/",
+    "www.cffex.com.cn": "http://www.cffex.com.cn/",
+    "api.gold-api.com": "https://www.google.com/",
+    "open.er-api.com": "https://www.google.com/",
+}
+# 各 host 最小请求间隔（秒）：新浪按元宝建议 ≥1~2s（取 2s + 随机抖动）
+_HOST_INTERVAL = {
+    "hq.sinajs.cn": 2.0,
+    "qt.gtimg.cn": 1.0,
+    "www.cffex.com.cn": 1.0,
+    "api.gold-api.com": 1.0,
+    "open.er-api.com": 1.0,
+}
+
+def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
+              verify_ssl=False, label=""):
+    """统一的伪装 + 限频 + 指数退避 HTTP GET。
+    - 伪装：随机浏览器 UA + 按 host 注入 Referer + 完整请求头；
+    - 限频：按 host 最小间隔 + 随机抖动，杜绝突发并发触发 WAF/封禁；
+    - 退避：403/429/空响应/超时按 2/4/8s 指数退避重试；
+    - 缓存：cache_ttl 秒内同 URL 直接复用，减少重复拉取。
+    返回 (text, ok)，失败返回 ("", False)。"""
+    host = urlparse(url).netloc if '//' in url else url.split('/')[0]
+    iv = _HOST_INTERVAL.get(host, 1.0)
+    # —— 限频：确保与同 host 上次请求间隔 >= iv（含 0~1s 随机抖动）——
+    with _RATE_LOCK:
+        last = _RATE.get(host, 0.0)
+        elapsed = time.time() - last
+        wait = (iv + random.uniform(0, 1.0)) - elapsed
+        if wait > 0:
+            time.sleep(min(wait, 5.0))
+        _RATE[host] = time.time()
+    # —— 短缓存：避免同一次运行内重复拉取相同 URL ——
+    ttl = cache_ttl if cache_ttl is not None else _CACHE_TTL
+    if ttl and url in _CACHE:
+        ts, txt = _CACHE[url]
+        if time.time() - ts < ttl:
+            return txt, True
+    # —— 请求头伪装 ——
+    headers = {
+        "User-Agent": random.choice(_UA_POOL),
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Connection": "keep-alive",
+        "Referer": _REFERERS.get(host, "https://www.google.com/"),
+    }
+    ctx = None if verify_ssl else ssl._create_unverified_context()
+    last_err = ""
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+                raw = r.read()
+            try:
+                txt = raw.decode(encoding)
+            except Exception:
+                txt = raw.decode('utf-8', errors='replace')
+            if not txt or len(txt) < 4:
+                last_err = "empty body"; raise ValueError("empty body")
+            if ttl:
+                _CACHE[url] = (time.time(), txt)
+            return txt, True
+        except Exception as e:
+            last_err = str(e)
+            if attempt < retries - 1:
+                back = 2 ** (attempt + 1)
+                print(f"  · {label} 请求失败({last_err[:48]}), {back}s 后退避重试 ({attempt+1}/{retries})")
+                time.sleep(back)
+    print(f"  · {label} 最终失败: {last_err[:60]}")
+    return "", False
 
 # === 指数（Tushare 优先，AKShare/腾讯兜底） ===
 def fetch_indices_tushare(token):
@@ -112,13 +209,13 @@ def fetch_indices():
     }
     result = {}
     try:
-        import urllib.request, re
+        import re
         codes = ','.join(v[1] for v in tencent.values())
-        req = urllib.request.Request(
+        content, ok = _http_get(
             f"https://qt.gtimg.cn/q={codes}",
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            content = r.read().decode('gbk', errors='replace')
+            encoding='gbk', timeout=10, retries=2, cache_ttl=60, label="腾讯指数")
+        if not ok:
+            return result
         for line in content.split(';'):
             m = re.search(r'v_(\w+)="([^"]+)"', line)
             if not m:
@@ -142,6 +239,54 @@ def fetch_indices():
                     break
     except Exception as e:
         print(f"  ❌ 腾讯指数接口失败: {e}")
+    return result
+
+def fetch_indices_sina():
+    """新浪财经 hq.sinajs.cn 兜底源（A股指数）。
+    按元宝对新浪财经的建议配置：
+      - Referer 强制带 https://finance.sina.com.cn/（否则 403/空）；
+      - 随机浏览器 UA 伪装；
+      - 按 host 最小间隔≥2s（含随机抖动），杜绝突发并发触发 WAF；
+      - 批量一次拉全（list=sh000001,sh000300,sz399006），不拆单循环；
+      - 403/429/空响应按指数退避重试。
+    字段格式：var hq_str_xxx="名称,今开,昨收,当前,最高,最低,..." → 当前=parts[3], 昨收=parts[2]。
+    （已用腾讯实时值交叉验证：sh000001 新浪 parts[3]=3867.0336 == 腾讯当前价 3867.03）"""
+    sina = {
+        '000001': ('上证指数', 'sh000001'),
+        '000300': ('沪深300',  'sh000300'),
+        '399006': ('创业板指',  'sz399006'),
+    }
+    codes = ','.join(v[1] for v in sina.values())
+    url = f"https://hq.sinajs.cn/list={codes}"
+    txt, ok = _http_get(url, encoding='gbk', timeout=15, retries=3,
+                        cache_ttl=60, label="新浪指数")
+    if not ok:
+        return {}
+    import re
+    result = {}
+    for line in txt.split(';'):
+        line = line.strip()
+        if not line or '=' not in line:
+            continue
+        m = re.match(r'var hq_str_(\w+)="([^"]*)"', line)
+        if not m:
+            continue
+        code = m.group(1)
+        parts = m.group(2).split(',')
+        if len(parts) < 4:
+            continue
+        for key, (name, scode) in sina.items():
+            if scode != code:
+                continue
+            try:
+                price = float(parts[3])
+                prev = float(parts[2])
+                pct = round((price - prev) / prev * 100, 2) if prev else 0
+                result[key] = {'name': name, 'price': round(price, 2),
+                               'chg': round(price - prev, 2), 'pct': pct}
+                print(f"  ✅ 新浪 {name}: {price} ({pct}%)")
+            except Exception as e:
+                print(f"  · 新浪 {name} 解析失败: {e}")
     return result
 
 # === 聚宽 JQData（优先源，凭据走环境变量，绝不硬编码） ===
@@ -192,29 +337,26 @@ def fetch_indices_jq(jq):
 
 # === 黄金 ===
 def fetch_usdcny():
-    """实时美元兑人民币（免费接口，带超时与兜底）。"""
-    def _go():
-        req = urllib.request.Request(
-            "https://open.er-api.com/v6/latest/USD",
-            headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.loads(r.read())
+    """实时美元兑人民币（免费接口，走过统一的伪装+限频请求器，失败兜底 7.2）。"""
+    txt, ok = _http_get("https://open.er-api.com/v6/latest/USD",
+                        timeout=10, retries=3, cache_ttl=120, label="美元兑人民币")
+    if not ok:
+        return 7.2
+    try:
+        d = json.loads(txt)
         rate = float(d['rates']['CNY'])
         if 6.0 < rate < 8.0:   # 合理区间校验，避免脏数据
             return rate
-        raise ValueError(f"汇率异常 {rate}")
-    return _call_with_timeout(_go, 12, 7.2, "美元兑人民币")
+    except Exception:
+        pass
+    return 7.2
 
 
 def fetch_gold(prev_gold=None):
     """国际金价(XAU/USD) + 实时汇率换算的国内金价；涨跌幅与上一次快照比较。"""
-    def _go():
-        req = urllib.request.Request(
-            "https://api.gold-api.com/price/XAU",
-            headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read())
-    d = _call_with_timeout(_go, 12, None, "Gold-API")
+    txt, ok = _http_get("https://api.gold-api.com/price/XAU",
+                        timeout=10, retries=3, cache_ttl=120, label="Gold-API")
+    d = json.loads(txt) if ok else None
     if not d:
         return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0, 'fx': 0}
     try:
@@ -435,22 +577,14 @@ def _fetch_cffex_csv_day(day):
     返回 {IF:{label,long,short,net}, ...}；单个 {SYM}_1.csv 内含 成交量/持买/持卖 三榜，
     按会员简称匹配「中信期货」并跨合约(IF2608/2609/2612...)汇总。"""
     import csv, io
-    import urllib.request
     targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
     ym, dd = day[:6], day[6:]
     result = {}
     for sym, label in targets.items():
         url = f"http://www.cffex.com.cn/sj/ccpm/{ym}/{dd}/{sym}_1.csv"
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                _data = resp.read()
-                try:
-                    raw = _data.decode('gb18030')
-                except Exception:
-                    raw = _data.decode('utf-8-sig', errors='replace')
-        except Exception as e:
-            print(f"  · 中信期指 {sym} {day} 抓取失败: {e}")
+        raw, ok = _http_get(url, encoding='gb18030', timeout=12, retries=1,
+                            cache_ttl=300, label=f"中信期指{sym}")
+        if not ok:
             continue
         rows = list(csv.reader(io.StringIO(raw)))
         if len(rows) < 3:
@@ -533,10 +667,13 @@ def main():
     idxStale = False
     indices = fetch_indices()
     if not indices:
+        print("  · 腾讯指数失败，尝试新浪兜底")
+        indices = fetch_indices_sina()
+    if not indices:
         indices = prev.get('indices', {})
         if indices:
             idxStale = True
-            print("  · 指数接口失败，沿用上次快照")
+            print("  · 指数接口全部失败，沿用上次快照")
     # 聚宽优先覆盖 A 股指数（纳指/恒生科技聚宽无，走腾讯兜底；不新增沪深300/创业板）
     try:
         _jq = _call_with_timeout(jq_auth, 25, None, "聚宽登录")
