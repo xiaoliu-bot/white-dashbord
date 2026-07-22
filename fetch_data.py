@@ -152,7 +152,14 @@ def jq_auth():
         print("  · 未配置 JQ_USER/JQ_PASSWORD，跳过聚宽")
         return None
     try:
-        import jqdatasdk as jq
+        try:
+            import jqdatasdk as jq
+        except ImportError:
+            # 兜底：运行时自装，避免 workflow 未 pre-install 时直接跳过
+            import subprocess, sys
+            print("  · 运行时安装 jqdatasdk ...")
+            subprocess.run([sys.executable, "-m", "pip", "install", "jqdatasdk", "-q"], check=False)
+            import jqdatasdk as jq
         jq.auth(user, pwd)
         print("  ✅ 聚宽登录成功")
         return jq
