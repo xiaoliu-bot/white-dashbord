@@ -14,6 +14,7 @@
     --red:#F43F5E; --red-soft:rgba(244,63,94,.14);
     --green:#10B981; --green-soft:rgba(16,185,129,.14);
     --gold:#F5B301; --gold-soft:rgba(245,179,1,.14);
+    --blue:#3B82F6;
     --line:#333344;
   }
   *{box-sizing:border-box;margin:0;padding:0;}
@@ -57,8 +58,24 @@
   .icard .iname{font-size:14px;font-weight:600;}
   .icard .icode{font-size:11px;color:var(--faint);background:#1c1c20;padding:2px 7px;border-radius:5px;}
   .icard .ival{font-size:30px;font-weight:700;margin:10px 0 4px;}
-  .icard .ichg{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:5px;}
+  .icard .ichg{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;}
+  .icard.citic{border-color:var(--blue);box-shadow:0 0 0 1px rgba(59,130,246,.12);}
+  .icard.citic .ival{font-size:20px;}
   .up{color:var(--red);} .down{color:var(--green);}
+
+  /* 分时走势图 */
+  .idxchart-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:14px;}
+  .idxchart-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+  .idxchart-head .t{font-size:12px;color:var(--muted);font-weight:600;}
+  #idxChart{width:100%;height:180px;display:block;}
+
+  /* 回溯控件 */
+  .replay{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .replay label{font-size:12px;color:var(--faint);}
+  .replay select{background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:6px;
+    padding:4px 8px;font-family:inherit;font-size:12px;font-weight:600;}
+  .replay input[type=range]{width:170px;accent-color:var(--red);}
+  #histLabel{font-size:12px;color:var(--muted);min-width:48px;}
 
   /* M2 Sectors */
   .sectors{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;}
@@ -110,7 +127,7 @@
     .gold{grid-template-columns:1fr;}
   }
 
-  /* 手动刷新按钮 */
+  /* 按钮 */
   .rbtn{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;font-weight:700;color:var(--text);
     background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:7px 14px;cursor:pointer;
     display:inline-flex;align-items:center;gap:6px;transition:border-color .2s,background .2s;}
@@ -140,13 +157,24 @@
     </div>
   </div>
 
-  <!-- M1 大盘指数 -->
+  <!-- M1 大盘指数 + 中信期指多空 + 分时走势 -->
   <section>
     <div class="sec-head">
-      <div class="sec-title">大盘指数</div>
-      <div class="sec-sub">上证 · 沪深300 · 创业板 · 恒生科技（来源 AKShare）</div>
+      <div class="sec-title">大盘指数 · 中信期指多空</div>
+      <div class="sec-sub">上证 · 纳指 · 恒生科技（腾讯） · 中信期货股指期货多空（CFFEX）</div>
+      <div class="replay">
+        <label>回溯</label>
+        <select id="histDate" onchange="onSelectDate()"></select>
+        <input type="range" id="histTime" min="0" max="0" value="0" disabled oninput="onScrub(this.value)">
+        <span id="histLabel" class="mono"></span>
+        <button id="liveBtn" class="rbtn busy" onclick="backToLive()">● 实时</button>
+      </div>
     </div>
     <div class="indices" id="indices"></div>
+    <div class="idxchart-wrap">
+      <div class="idxchart-head"><span class="t">指数分时走势（归一化涨跌幅 %）</span><span class="t" id="chartRange"></span></div>
+      <canvas id="idxChart"></canvas>
+    </div>
   </section>
 
   <!-- M2 板块异动 -->
@@ -193,22 +221,29 @@
   </section>
 
   <div class="foot">
-    <span>● 数据来源：market-monitor / api/data.json（每日收盘抓取）</span>
-    <span>● 红=涨/净流入 · 绿=跌/净流出 · 金=黄金</span>
-    <span class="note">* 数据由 fetch_data.py 从 AKShare / Gold-API 抓取，仅供参考，不构成投资建议</span>
+    <span>● 数据：每 5 分钟抓取并入库（api/history/日期/series.json），可回溯历史</span>
+    <span>● 红=涨/净流入 · 绿=跌/净流出 · 金=黄金 · 蓝=中信期指</span>
+    <span class="note">* 指数/黄金来自腾讯与 Gold-API；板块资金流与中信期指来自 AKShare，仅供参考，不构成投资建议</span>
   </div>
 
 </div>
 
 <script>
-  /* ---------- 真实数据：market-monitor 仓库的 api/data.json（由 fetch_data.py 每日收盘抓取） ---------- */
+  /* ---------- 真实数据：market-monitor 仓库的 api/data.json（由 fetch_data.py 每 5 分钟抓取） ---------- */
   const DATA_URL = 'api/data.json';
-  const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';   // white-dashbord 本地兜底
+  const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';
+  const HIST_BASE = 'api/history/';
   const $ = s => document.querySelector(s);
-  const yi = v => (v||0) / 1e8;        // 元 -> 亿
+  const yi = v => (v||0) / 1e8;
   let DATA = null;
   let maxAbsV = 1;
   const bubbleMap = {};
+
+  // 回溯状态
+  let HIST = {};          // date -> [snapshots]
+  let activeDate = null;  // 当前展示的日期
+  let isLive = true;      // 是否实时模式
+  let liveSeries = null;  // 今天的时序（实时模式下的图表数据源）
 
   async function loadData(){
     let src = 'market-monitor';
@@ -226,14 +261,20 @@
         return;
       }
     }
+    activeDate = DATA.updated || null;
     renderAll();
     const t = new Date();
-    $('#clock').textContent = '数据更新于 ' + (DATA.updated || '—') + ' · 拉取于 ' + t.toTimeString().slice(0,8);
+    $('#clock').textContent = '数据更新于 ' + (DATA.updated||'—') + (DATA.time?(' '+DATA.time):'') + ' · 拉取于 ' + t.toTimeString().slice(0,8);
+    // 拉取当天时序用于走势图
+    if(activeDate){
+      const s = await fetchSeries(activeDate);
+      if(s){ liveSeries = s; if(isLive){ syncReplayUI(s); renderChart(s, s.length-1); } }
+    }
   }
 
   function renderAll(){
     if(!DATA) return;
-    renderIndices(); renderSectors(); renderGold(); renderBubbles();
+    renderIndices(); renderCitic(DATA.citic); renderSectors(); renderGold(); renderBubbles();
   }
 
   /* ---------- M1 大盘指数 ---------- */
@@ -253,7 +294,26 @@
         ${magnitudeBar(d.pct||0)}`;
       box.appendChild(el);
     });
-    if(!Object.keys(idx).length) box.innerHTML = '<div class="icard"><div class="iname">指数数据暂缺</div><div class="note" style="margin-top:8px">AKShare 东财接口今日未返回，将随下次抓取恢复</div></div>';
+    if(!Object.keys(idx).length) box.innerHTML = '<div class="icard"><div class="iname">指数数据暂缺</div><div class="note" style="margin-top:8px">接口今日未返回，将随下次抓取恢复</div></div>';
+  }
+
+  /* ---------- 中信期货 股指期货多空单 ---------- */
+  function renderCitic(citic){
+    const box = $('#indices');
+    const el = document.createElement('div'); el.className = 'icard citic';
+    if(!citic || !citic.contracts || !Object.keys(citic.contracts).length){
+      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span></div>
+        <div class="ival mono">--</div><div class="ichg mono">数据暂缺（约 16:30 发布）</div>`;
+      box.appendChild(el); return;
+    }
+    const t = citic.total || {};
+    const net = t.net || 0;
+    const up = net >= 0;
+    const rows = Object.entries(citic.contracts).map(([sym,d])=>`${d.label} ${(d.net>=0?'+':'')+d.net}`).join('　');
+    el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span></div>
+      <div class="ival mono" style="color:${up?'var(--red)':'var(--green)'}">${up?'净多':'净空'} ${net} 手</div>
+      <div class="ichg mono ${up?'up':'down'}" style="font-size:12px">${rows}</div>`;
+    box.appendChild(el);
   }
 
   /* ---------- M2 板块异动 ---------- */
@@ -325,6 +385,96 @@
     });
   }
 
+  /* ---------- 指数分时走势图（canvas，归一化涨跌幅） ---------- */
+  const IDX_KEYS = ['000001','NDX','HSTECH'];
+  const IDX_LABEL = {000001:'上证', NDX:'纳指', HSTECH:'恒生科技'};
+  const IDX_COLOR = {000001:'#F43F5E', NDX:'#3B82F6', HSTECH:'#10B981'};
+  function renderChart(series, markerIdx){
+    const cv = $('#idxChart'); if(!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth || 600, H = cv.clientHeight || 180;
+    cv.width = W*dpr; cv.height = H*dpr;
+    const ctx = cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,W,H);
+    $('#chartRange').textContent = series && series.length ? (series[0].time+' → '+series[series.length-1].time+'  ·  '+series.length+'点') : '';
+    if(!series || series.length < 1){ ctx.fillStyle='#71717A'; ctx.font='12px sans-serif'; ctx.fillText('暂无分时数据', 12, H/2); return; }
+    const padL=10, padR=10, padT=14, padB=16;
+    const plotW = W-padL-padR, plotH = H-padT-padB;
+    const norm = {};
+    IDX_KEYS.forEach(k=>{
+      const arr = series.map(s=>{ const d=(s.indices||{})[k]; return d&&d.price!=null?d.price:null; });
+      const base = arr.find(x=>x!=null);
+      norm[k] = arr.map(x=> (x!=null && base!=null)? (x-base)/base*100 : null);
+    });
+    let ymin=0, ymax=0;
+    IDX_KEYS.forEach(k=> norm[k].forEach(v=>{ if(v!=null){ ymin=Math.min(ymin,v); ymax=Math.max(ymax,v);} }));
+    if(ymin===ymax){ ymin-=0.5; ymax+=0.5; }
+    const y = v => padT + (ymax-v)/(ymax-ymin)*plotH;
+    const x = i => padL + (series.length<=1?plotW/2: i/(series.length-1)*plotW);
+    if(ymin<0 && ymax>0){ ctx.strokeStyle='#333344'; ctx.beginPath(); ctx.moveTo(padL,y(0)); ctx.lineTo(W-padR,y(0)); ctx.stroke(); }
+    IDX_KEYS.forEach(k=>{
+      ctx.strokeStyle=IDX_COLOR[k]; ctx.lineWidth=1.6; ctx.beginPath();
+      let started=false;
+      norm[k].forEach((v,i)=>{ if(v==null) return; const px=x(i), py=y(v); if(!started){ctx.moveTo(px,py);started=true;} else ctx.lineTo(px,py); });
+      ctx.stroke();
+    });
+    if(markerIdx==null) markerIdx = series.length-1;
+    IDX_KEYS.forEach(k=>{ const v=norm[k][markerIdx]; if(v==null) return; ctx.fillStyle=IDX_COLOR[k]; ctx.beginPath(); ctx.arc(x(markerIdx),y(v),3,0,Math.PI*2); ctx.fill(); });
+    ctx.font='11px sans-serif'; let lx=padL+4;
+    IDX_KEYS.forEach(k=>{ ctx.fillStyle=IDX_COLOR[k]; ctx.fillRect(lx,2,8,8); ctx.fillStyle='#A1A1AA'; ctx.fillText(IDX_LABEL[k],lx+12,10); lx += 12 + ctx.measureText(IDX_LABEL[k]).width + 18; });
+  }
+
+  /* ---------- 历史回溯 ---------- */
+  async function fetchSeries(date){
+    try{
+      const r = await fetch(HIST_BASE + date + '/series.json?t=' + Date.now());
+      if(r.ok){ const s = await r.json(); HIST[date] = s; return s; }
+    }catch(e){}
+    return null;
+  }
+  async function loadDates(){
+    try{
+      const r = await fetch(HIST_BASE + 'dates.json?t=' + Date.now());
+      if(r.ok){
+        const ds = await r.json(); const sel = $('#histDate');
+        sel.innerHTML='';
+        ds.slice().reverse().forEach(d=>{ const o=document.createElement('option'); o.value=d; o.textContent=d; sel.appendChild(o); });
+        if(activeDate && ds.includes(activeDate)) sel.value = activeDate;
+      }
+    }catch(e){}
+  }
+  function syncReplayUI(s){
+    const sel=$('#histDate'); if(activeDate && sel.value!==activeDate) sel.value=activeDate;
+    $('#histTime').disabled = true; $('#histTime').max = Math.max(0, s.length-1); $('#histTime').value = s.length-1;
+    $('#histLabel').textContent = (s[s.length-1].time||'');
+  }
+  async function onSelectDate(){
+    const d = $('#histDate').value; if(!d) return;
+    const s = await fetchSeries(d); if(!s || !s.length) return;
+    isLive = false; activeDate = d;
+    $('#liveBtn').classList.remove('busy');
+    $('#histTime').disabled = false;
+    $('#histTime').max = Math.max(0, s.length-1);
+    $('#histTime').value = s.length-1;
+    applySnapshot(s.length-1);
+  }
+  function onScrub(val){
+    if(isLive) return;
+    const s = HIST[activeDate]; if(!s) return;
+    applySnapshot(+val);
+  }
+  function applySnapshot(i){
+    const s = HIST[activeDate]; if(!s || !s[i]) return;
+    DATA = s[i];
+    renderAll();
+    renderChart(s, i);
+    $('#histLabel').textContent = s[i].time || '';
+  }
+  function backToLive(){
+    isLive = true;
+    $('#liveBtn').classList.add('busy');
+    loadData();
+  }
+
   /* ---------- 手动触发 CI 重新抓取（需用户自己的 GitHub Token，仅存本机） ---------- */
   const GH_REPO = 'xiaoliu-bot/white-dashbord';
   const GH_WF   = 317447721;   // Daily Market Data Fetch 工作流 ID
@@ -389,10 +539,18 @@
     btn.disabled = false; btn.classList.remove('busy');
   }
 
-  /* ---------- 启动：拉取真实数据，并每 60s 轮询最新收盘数据 ---------- */
+  /* ---------- 启动：拉取真实数据，每 5 分钟刷新；载入可选历史日期 ---------- */
   loadData();
-  setInterval(loadData, 60000);
-  window.addEventListener('resize', ()=>{ if(DATA){ layout('red', Object.values(bubbleMap).filter(b=>b.el.classList.contains('red'))); layout('green', Object.values(bubbleMap).filter(b=>b.el.classList.contains('green'))); } });
+  loadDates();
+  setInterval(()=>{ if(isLive) loadData(); }, 300000);   // 每 5 分钟
+  window.addEventListener('resize', ()=>{
+    if(DATA){
+      const s = isLive ? liveSeries : (HIST[activeDate]);
+      if(s) renderChart(s, isLive ? s.length-1 : (+($('#histTime').value)||s.length-1));
+      layout('red', Object.values(bubbleMap).filter(b=>b.el.classList.contains('red')));
+      layout('green', Object.values(bubbleMap).filter(b=>b.el.classList.contains('green')));
+    }
+  });
 </script>
 </body>
 </html>
