@@ -2,8 +2,8 @@ name: Daily Market Data Fetch
 
 on:
   schedule:
-    # 每 5 分钟抓取一次（北京时间约 09:00–16:55，周一~周五）
-    - cron: '*/5 1-8 * * 1-5'
+    # 每 5 分钟抓取一次（北京时间约 09:00–17:55，周一~周五；覆盖收盘后中金所持仓排名发布）
+    - cron: '*/5 1-9 * * 1-5'
   workflow_dispatch:
   repository_dispatch:
     types: [fetch-data]

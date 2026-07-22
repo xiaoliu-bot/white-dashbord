@@ -309,7 +309,7 @@
     const el = document.createElement('div'); el.className = 'icard citic';
     if(!citic || !citic.contracts || !Object.keys(citic.contracts).length){
       el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
-        <div class="ival mono">--</div><div class="ichg mono">数据暂缺（约 16:30 发布）</div>`;
+        <div class="ival mono">--</div><div class="ichg mono">数据暂缺（中金所数据抓取失败）</div>`;
       box.appendChild(el); return;
     }
     const t = citic.total || {};

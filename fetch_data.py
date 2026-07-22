@@ -430,66 +430,71 @@ def fetch_plate_data():
     return all_flows
 
 # === 中信期货 股指期货多空单（CFFEX 前20会员持仓）===
+def _fetch_cffex_csv_day(day):
+    """从中金所官网直抓某交易日持仓排名 CSV（HTTP，免费权威源）。
+    返回 {IF:{label,long,short,net}, ...}；单个 {SYM}_1.csv 内含 成交量/持买/持卖 三榜，
+    按会员简称匹配「中信期货」并跨合约(IF2608/2609/2612...)汇总。"""
+    import csv, io
+    import urllib.request
+    targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
+    ym, dd = day[:6], day[6:]
+    result = {}
+    for sym, label in targets.items():
+        url = f"http://www.cffex.com.cn/sj/ccpm/{ym}/{dd}/{sym}_1.csv"
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                _data = resp.read()
+                try:
+                    raw = _data.decode('gb18030')
+                except Exception:
+                    raw = _data.decode('utf-8-sig', errors='replace')
+        except Exception as e:
+            print(f"  · 中信期指 {sym} {day} 抓取失败: {e}")
+            continue
+        rows = list(csv.reader(io.StringIO(raw)))
+        if len(rows) < 3:
+            continue
+        # 列序：0交易日 1合约 2排名 | 3成交量会员 4成交量 5增减 | 6持买会员 7持买量 8增减 | 9持卖会员 10持卖量 11增减
+        long_v = short_v = 0
+        for r in rows[2:]:
+            if len(r) <= 11:
+                continue
+            if '中信期货' in (r[6] or ''):
+                try: long_v += int(float(r[7] or 0))
+                except: pass
+            if '中信期货' in (r[9] or ''):
+                try: short_v += int(float(r[10] or 0))
+                except: pass
+        if long_v or short_v:
+            result[sym] = {'label': label, 'long': long_v, 'short': short_v, 'net': long_v - short_v}
+    return result
+
+
 def fetch_citic_futures():
-    """中信期货在股指期货(IF/IC/IH/IM)的多空单（前20会员持仓）。
-    来源：AKShare get_cffex_rank_table（中金所每日持仓排名，约 16:30 发布）。best-effort。
-    返回 {date, contracts:{IF:{label,long,short,net},...}, total:{long,short,net}}。
-    """
+    """中信期货在股指期货(IF/IC/IH/IM)的多空单（前20会员持仓，跨合约汇总）。
+    来源：中金所官网每日持仓排名 CSV（http，约 16:30 发布），best-effort。
+    返回 {date, contracts:{IF:{label,long,short,net},...}, total:{long,short,net}}。"""
     try:
-        import akshare as ak
         from datetime import date as _d, timedelta as _td
         # 取最近若干交易日，直到取到已发布的中金所持仓排名（当日约 16:30 后发布）
         candidate_days = []
-        for i in range(0, 6):
+        for i in range(0, 4):
             d = _d.today() - _td(days=i)
             if d.weekday() < 5:
                 candidate_days.append(d.strftime('%Y%m%d'))
         if not candidate_days:
             return {}
-        targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
         for day in candidate_days:
-            print(f"  · 中信期指：取中金所持仓排名 {day}")
-            tbl = _call_with_timeout(lambda: ak.get_cffex_rank_table(date=day), 25, None, f"中信期指 {day}")
-            if tbl is None:
-                continue
-            out = {'date': day, 'contracts': {}, 'total': {'long': 0, 'short': 0, 'net': 0}}
-            for sym, label in targets.items():
-                df = tbl.get(sym)
-                if df is None or (hasattr(df, 'empty') and df.empty):
-                    continue
-                cols = list(df.columns)
-                # 兼容中英文列名找「会员名称」与「多/空持仓」
-                name_col = None
-                for c in cols:
-                    s = str(c)
-                    if any(k in s for k in ['party', 'Party', '会员', '名称', 'name', 'Name']):
-                        name_col = c
-                        break
-                long_col = short_col = None
-                for c in cols:
-                    s = str(c).lower()
-                    if 'long' in s and any(k in s for k in ['open', 'interest', 'position', '买', '多']):
-                        long_col = c
-                    if 'short' in s and any(k in s for k in ['open', 'interest', 'position', '卖', '空']):
-                        short_col = c
-                if name_col is None or long_col is None or short_col is None:
-                    print(f"  · 中信期指 {sym} 列名未识别: {cols}")
-                    continue
-                sub = df[df[name_col].astype(str).str.contains('中信', na=False)]
-                if sub.empty:
-                    continue
-                long_v = float(sub[long_col].iloc[0] or 0)
-                short_v = float(sub[short_col].iloc[0] or 0)
-                out['contracts'][sym] = {'label': label, 'long': int(long_v),
-                                         'short': int(short_v), 'net': int(long_v - short_v)}
-                out['total']['long'] += int(long_v)
-                out['total']['short'] += int(short_v)
-                out['total']['net'] += int(long_v - short_v)
-            if out['contracts']:
-                print(f"  ✅ 中信期指多空 {day}: {list(out['contracts'].keys())} 总净仓 {out['total']['net']} 手")
-                return out
+            print(f"  · 中信期指：取中金所排名 {day} (HTTP CSV)")
+            out = _call_with_timeout(lambda: _fetch_cffex_csv_day(day), 25, {}, f"中信期指 {day}")
+            if out:
+                total = {'long': 0, 'short': 0, 'net': 0}
+                for s, v in out.items():
+                    total['long'] += v['long']; total['short'] += v['short']; total['net'] += v['net']
+                print(f"  ✅ 中信期指多空 {day}: {list(out.keys())} 总净仓 {total['net']} 手")
+                return {'date': day, 'contracts': out, 'total': total}
         print("  · 中信期指：近几个交易日均未取到中信持仓")
-        return {}
         return {}
     except Exception as e:
         print(f"  ❌ 中信期指多空: {e}")
