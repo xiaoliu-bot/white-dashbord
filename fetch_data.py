@@ -471,34 +471,48 @@ def _fetch_cffex_csv_day(day):
     return result
 
 
-def fetch_citic_futures():
+def fetch_citic_futures(prev_citic=None):
     """中信期货在股指期货(IF/IC/IH/IM)的多空单（前20会员持仓，跨合约汇总）。
     来源：中金所官网每日持仓排名 CSV（http，约 16:30 发布），best-effort。
-    返回 {date, contracts:{IF:{label,long,short,net},...}, total:{long,short,net}}。"""
+    优先抓最新交易日；美国节点对中金所偶发超时，故抓不到时沿用上次快照(prev)，
+    避免回退到更早日期。返回 {date, contracts:{IF:{label,long,short,net},...}, total:{...}}。"""
     try:
         from datetime import date as _d, timedelta as _td
-        # 取最近若干交易日，直到取到已发布的中金所持仓排名（当日约 16:30 后发布）
         candidate_days = []
-        for i in range(0, 4):
+        for i in range(0, 3):
             d = _d.today() - _td(days=i)
             if d.weekday() < 5:
                 candidate_days.append(d.strftime('%Y%m%d'))
         if not candidate_days:
-            return {}
-        for day in candidate_days:
+            return prev_citic or {}
+        # 1) 优先抓最新交易日（美国节点对中金所偶发超时，15s 即弃）
+        for day in candidate_days[:1]:
             print(f"  · 中信期指：取中金所排名 {day} (HTTP CSV)")
-            out = _call_with_timeout(lambda: _fetch_cffex_csv_day(day), 25, {}, f"中信期指 {day}")
+            out = _call_with_timeout(lambda: _fetch_cffex_csv_day(day), 15, {}, f"中信期指 {day}")
             if out:
                 total = {'long': 0, 'short': 0, 'net': 0}
                 for s, v in out.items():
                     total['long'] += v['long']; total['short'] += v['short']; total['net'] += v['net']
                 print(f"  ✅ 中信期指多空 {day}: {list(out.keys())} 总净仓 {total['net']} 手")
                 return {'date': day, 'contracts': out, 'total': total}
-        print("  · 中信期指：近几个交易日均未取到中信持仓")
+        # 2) 抓不到 → 沿用上次快照（已含最近可用数据）
+        if prev_citic and prev_citic.get('contracts'):
+            print("  · 中信期指沿用上次快照")
+            return prev_citic
+        # 3) 无快照 → 试昨天
+        for day in candidate_days[1:]:
+            print(f"  · 中信期指：取中金所排名 {day} (HTTP CSV)")
+            out = _call_with_timeout(lambda: _fetch_cffex_csv_day(day), 15, {}, f"中信期指 {day}")
+            if out:
+                total = {'long': 0, 'short': 0, 'net': 0}
+                for s, v in out.items():
+                    total['long'] += v['long']; total['short'] += v['short']; total['net'] += v['net']
+                print(f"  ✅ 中信期指多空 {day}: {list(out.keys())} 总净仓 {total['net']} 手")
+                return {'date': day, 'contracts': out, 'total': total}
         return {}
     except Exception as e:
         print(f"  ❌ 中信期指多空: {e}")
-        return {}
+        return prev_citic or {}
 
 def main():
     socket.setdefaulttimeout(30)   # 兜底：任何网络调用卡死都在 30s 内失败，避免整条流水线挂起
@@ -572,12 +586,13 @@ def main():
 
     print("[4/4] 中信期指多空...")
     citicStale = False
-    citic = fetch_citic_futures()
-    if not citic:
-        citic = prev.get('citic', {})
-        if citic:
-            citicStale = True
-            print("  · 中信期指沿用上次快照")
+    _prev_citic = prev.get('citic', {})
+    citic = fetch_citic_futures(_prev_citic)
+    if citic is _prev_citic and _prev_citic:
+        citicStale = True
+        print("  · 中信期指沿用上次快照")
+    elif not citic:
+        citic = _prev_citic
 
     data = {
         'updated': today,
