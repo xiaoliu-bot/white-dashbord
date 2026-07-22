@@ -2,12 +2,12 @@
 """
 每日收盘数据抓取 → api/data.json + api/history/YYYY-MM-DD.json
 数据源：
-  - 腾讯 qt.gtimg.cn（上证/沪深300/创业板/恒生科技，CI 中最稳定，主用）
-  - Tushare pro（best-effort，受积分/频限限制，限频时跳过；用户提供的 token 走此路径）
-  - Tushare legacy get_hist_data（Tushare pro 失败时的二级兜底，需交易所前缀）
-  - AKShare（东财，作为以上都失败时的最后兜底，加重试）
-  - Gold-API.com（国际金价，无需 key）
-  - AKShare stock_fund_flow_industry / concept（板块资金流）
+数据源优先级（板块数据优先从 Tushare 获取）：
+  【指数】1) Tushare pro（用户 token，best-effort，限频时跳过）→ 2) 腾讯 qt.gtimg.cn（CI 稳定主用）→ 3) AKShare 兜底
+  【板块资金流】1) Tushare 优先：pro.plate_fund_flow（含涨跌幅+净额，需积分≥2000）→ pro.moneyflow_industry（主力净流入）→ pro.moneyflow_concept（概念主力净流入）
+    命中即保留，best-effort，限频/积分不足时整体跳过；2) AKShare 东财兜底仅补充 Tushare 未命中的持仓板块
+  【黄金】Gold-API.com（国际金价，无需 key）
+  （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
 import json, time, os, datetime
@@ -208,9 +208,110 @@ PLATE_KEYWORDS = {
     '创新药':   ['创新药', '生物药', '化学制药', '医疗器械'],
 }
 
+def _match_plate(result, name, net, inflow, outflow, pct, source):
+    """按 PLATE_KEYWORDS 把东财/Tushare 行业名映射到持仓板块，命中且未存在的写入 result。"""
+    for plate, keywords in PLATE_KEYWORDS.items():
+        if plate in result:
+            continue
+        for kw in keywords:
+            if kw in name:
+                result[plate] = {
+                    'name': plate, '行业名': name,
+                    'net': round(net), 'inflow': round(inflow),
+                    'outflow': round(outflow), 'pct': round(pct, 2),
+                    'source': source,
+                }
+                return
+
+def fetch_plate_data_tushare(token):
+    """Tushare 优先：拉板块资金流（best-effort，限频/积分不足时返回 {} 交给 AKShare 兜底）。
+    依次尝试：
+      1) pro.plate_fund_flow（含涨跌幅 pct_change + 净额 net_buy，需积分≥2000）
+      2) pro.moneyflow_industry（行业主力净流入 main_net_in，单位千元）
+      3) pro.moneyflow_concept（概念主力净流入）
+    任一接口返回数据即按行业名匹配持仓板块；单位统一换算为「元」。
+    """
+    if not token:
+        print("  · 未配置 TUSHARE_TOKEN，跳过 Tushare 板块")
+        return {}
+    try:
+        import tushare as ts
+        ts.set_token(token)
+        pro = ts.pro_api()
+    except Exception as e:
+        print(f"  · Tushare pro 初始化失败: {e}")
+        return {}
+
+    # 最近交易日（最多往前 7 天内找工作日），规避非交易日无数据
+    trade_days = []
+    for i in range(0, 8):
+        d = _dt.date.today() - _dt.timedelta(days=i)
+        if d.weekday() < 5:
+            trade_days.append(d.strftime('%Y%m%d'))
+
+    result = {}
+
+    # 1) plate_fund_flow（含涨跌幅，最理想）
+    for td in trade_days[:3]:
+        try:
+            df = pro.plate_fund_flow(trade_date=td, src='None')
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    _match_plate(result, str(row.get('name', '')).strip(),
+                                float(row.get('net_buy', 0) or 0),
+                                0, 0, float(row.get('pct_change', 0) or 0), 'Tushare')
+                print(f"  ✅ Tushare plate_fund_flow {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
+                break
+        except Exception as e:
+            print(f"  · Tushare plate_fund_flow {td} 失败: {str(e)[:80]}")
+            time.sleep(3)
+        if result:
+            break
+
+    # 2) moneyflow_industry（仅净额，千元→元）
+    if not result:
+        for td in trade_days[:3]:
+            try:
+                df = pro.moneyflow_industry(trade_date=td)
+                if df is not None and not df.empty:
+                    for _, row in df.iterrows():
+                        _match_plate(result, str(row.get('name', '')).strip(),
+                                    float(row.get('main_net_in', 0) or 0) * 1000,
+                                    0, 0, 0, 'Tushare')
+                    print(f"  ✅ Tushare moneyflow_industry {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
+                    break
+            except Exception as e:
+                print(f"  · Tushare moneyflow_industry {td} 失败: {str(e)[:80]}")
+                time.sleep(3)
+            if result:
+                break
+
+    # 3) moneyflow_concept（仅净额，千元→元）
+    if not result:
+        for td in trade_days[:3]:
+            try:
+                df = pro.moneyflow_concept(trade_date=td)
+                if df is not None and not df.empty:
+                    for _, row in df.iterrows():
+                        _match_plate(result, str(row.get('name', '')).strip(),
+                                    float(row.get('main_net_in', 0) or 0) * 1000,
+                                    0, 0, 0, 'Tushare')
+                    print(f"  ✅ Tushare moneyflow_concept {td}: {len(df)} 条，命中 {len(result)} 个持仓板块")
+                    break
+            except Exception as e:
+                print(f"  · Tushare moneyflow_concept {td} 失败: {str(e)[:80]}")
+                time.sleep(3)
+            if result:
+                break
+
+    if not result:
+        print("  · Tushare 板块接口未命中（可能积分不足或限频），将由 AKShare 兜底")
+    return result
+
 def fetch_plate_data():
-    """从AKShare获取行业资金流和概念资金流"""
-    all_flows = {}  # name -> {净额, 流入, 流出, 涨跌幅, 来源}
+    """板块资金流：Tushare 优先（fetch_plate_data_tushare），AKShare 仅补充未命中板块。"""
+    all_flows = fetch_plate_data_tushare(os.environ.get('TUSHARE_TOKEN'))  # Tushare 优先
+    print(f"  · Tushare 已命中板块: {list(all_flows.keys())}")
 
     try:
         # 行业资金流
@@ -269,27 +370,32 @@ def fetch_plate_data():
     except Exception as e:
         print(f"  ❌ 概念资金流: {e}")
 
-    # 用板块涨跌做补充
+    # 用东财板块涨跌做补充：Tushare 已命中但缺涨跌幅(pct)的板块补 pct；完全缺失的板块估值 net
     try:
         spots = ak.stock_sector_spot()
         for _, row in spots.iterrows():
             name = str(row.get('板块名称', '')).strip()
             pct_spot = float(row.get('涨跌幅', 0) or 0)
             for plate, keywords in PLATE_KEYWORDS.items():
-                if plate in all_flows:
+                matched = any(kw in name for kw in keywords)
+                if not matched:
                     continue
-                for kw in keywords:
-                    if kw in name:
-                        all_flows[plate] = {
-                            'name': plate,
-                            '行业名': name,
-                            'net': int(pct_spot * 3e8),  # 估算
-                            'inflow': 0,
-                            'outflow': 0,
-                            'pct': round(pct_spot, 2),
-                            'source': '板块涨跌',
-                        }
-                        break
+                if plate in all_flows:
+                    # Tushare 已给净额：仅补缺失的涨跌幅
+                    if all_flows[plate].get('pct', 0) == 0:
+                        all_flows[plate]['pct'] = round(pct_spot, 2)
+                        all_flows[plate]['行业名'] = name
+                    break
+                all_flows[plate] = {
+                    'name': plate,
+                    '行业名': name,
+                    'net': int(pct_spot * 3e8),  # 估算
+                    'inflow': 0,
+                    'outflow': 0,
+                    'pct': round(pct_spot, 2),
+                    'source': '板块涨跌',
+                }
+                break
         print(f"  ✅ 板块涨跌补充后: {len(all_flows)} 个持仓板块")
     except Exception as e:
         print(f"  ❌ 板块涨跌: {e}")
