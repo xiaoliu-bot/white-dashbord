@@ -2,10 +2,8 @@ name: Daily Market Data Fetch
 
 on:
   schedule:
-    # 北京时间 11:40 / 15:10 / 21:40，周一~周五
-    - cron: '40 3 * * 1-5'
-    - cron: '10 7 * * 1-5'
-    - cron: '40 13 * * 1-5'
+    # 每 5 分钟抓取一次（北京时间约 09:00–16:55，周一~周五）
+    - cron: '*/5 1-8 * * 1-5'
   workflow_dispatch:
   repository_dispatch:
     types: [fetch-data]
@@ -46,8 +44,9 @@ jobs:
           CHANGES=$(git status --porcelain api/data.json api/history/)
           if [ -n "$CHANGES" ]; then
             DATE=$(date '+%Y-%m-%d')
+            TS=$(date '+%H:%M')
             git add api/data.json api/history/
-            git commit -m "📊 收盘数据 $DATE"
+            git commit -m "📊 数据快照 $DATE $TS"
             git push
             echo "✅ 推送成功"
           else
