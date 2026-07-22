@@ -109,6 +109,15 @@
     .sectors{grid-template-columns:repeat(2,1fr);}
     .gold{grid-template-columns:1fr;}
   }
+
+  /* 手动刷新按钮 */
+  .rbtn{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px;font-weight:700;color:var(--text);
+    background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:7px 14px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:6px;transition:border-color .2s,background .2s;}
+  .rbtn:hover{border-color:var(--red);}
+  .rbtn:disabled{opacity:.5;cursor:not-allowed;}
+  .rbtn.busy{border-color:var(--green);color:var(--green);}
+  .rtip{font-size:11px;color:var(--faint);margin-left:4px;max-width:260px;}
 </style>
 </head>
 <body>
@@ -125,6 +134,9 @@
     <div class="status">
       <span class="live"><span class="dot"></span>LIVE</span>
       <span class="clock mono" id="clock">加载中…</span>
+      <button id="reloadBtn" class="rbtn" onclick="loadData()">↻ 刷新</button>
+      <button id="refreshBtn" class="rbtn" onclick="manualFetch()" title="用你自己的 GitHub Token 触发 CI 重新抓取数据（Token 仅存本机浏览器）">⟳ 重新抓取</button>
+      <span id="refreshTip" class="rtip"></span>
     </div>
   </div>
 
@@ -311,6 +323,70 @@
       b.el.querySelector('.name').textContent = b.name;
       b.el.querySelector('.amt').textContent = (b.v>=0?'+':'-') + Math.abs(b.v).toFixed(1) + '亿';
     });
+  }
+
+  /* ---------- 手动触发 CI 重新抓取（需用户自己的 GitHub Token，仅存本机） ---------- */
+  const GH_REPO = 'xiaoliu-bot/white-dashbord';
+  const GH_WF   = 317447721;   // Daily Market Data Fetch 工作流 ID
+  async function manualFetch(){
+    let token = localStorage.getItem('mm_gh_token');
+    if(!token){
+      token = prompt('输入 GitHub Personal Access Token（需 repo 权限）以触发数据抓取。\n仅保存在本浏览器 localStorage，不会上传到任何服务器。\n（可在 GitHub → Settings → Developer settings → PAT 生成，勾选 repo 范围）');
+      if(!token){ return; }
+      localStorage.setItem('mm_gh_token', token.trim());
+    }
+    const btn = document.getElementById('refreshBtn');
+    const tip = document.getElementById('refreshTip');
+    btn.disabled = true; btn.classList.add('busy');
+    tip.textContent = '⏳ 正在触发抓取…';
+    try{
+      const resp = await fetch(`https://api.github.com/repos/${GH_REPO}/actions/workflows/${GH_WF}/dispatches`, {
+        method:'POST',
+        headers:{ 'Authorization':'Bearer '+token, 'Accept':'application/vnd.github+json', 'Content-Type':'application/json', 'User-Agent':'MarketMonitor' },
+        body: JSON.stringify({ ref:'main' })
+      });
+      if(resp.status === 204){
+        tip.textContent = '✅ 已触发，约 2–3 分钟生成新数据';
+        pollRun(token, tip, btn);
+      } else if(resp.status === 401 || resp.status === 403){
+        localStorage.removeItem('mm_gh_token');
+        tip.textContent = '❌ Token 无效/无权限，已清除请重试';
+        btn.disabled = false; btn.classList.remove('busy');
+      } else {
+        tip.textContent = '❌ 触发失败('+resp.status+')';
+        btn.disabled = false; btn.classList.remove('busy');
+      }
+    }catch(e){
+      tip.textContent = '❌ 网络错误';
+      btn.disabled = false; btn.classList.remove('busy');
+    }
+  }
+  async function pollRun(token, tip, btn){
+    const start = Date.now();
+    while(Date.now()-start < 240000){
+      await new Promise(r=>setTimeout(r,15000));
+      try{
+        const r = await fetch(`https://api.github.com/repos/${GH_REPO}/actions/runs?per_page=5`, {
+          headers:{ 'Authorization':'Bearer '+token, 'Accept':'application/vnd.github+json', 'User-Agent':'MarketMonitor' }
+        });
+        const d = await r.json();
+        const run = (d.workflow_runs||[]).find(x=> x.workflow_id === GH_WF || (x.name||'')==='Daily Market Data Fetch');
+        if(run && run.status === 'completed'){
+          if(run.conclusion === 'success'){
+            tip.textContent = '✅ 数据已更新，刷新中…';
+            await loadData();
+            tip.textContent = '✅ 完成';
+          } else {
+            tip.textContent = '⚠️ CI 未成功，请查 Actions 日志';
+          }
+          btn.disabled = false; btn.classList.remove('busy');
+          return;
+        }
+        tip.textContent = '⏳ 抓取中… '+Math.round((Date.now()-start)/1000)+'s';
+      }catch(e){}
+    }
+    tip.textContent = '⏰ 超时，请稍后手动点「刷新」';
+    btn.disabled = false; btn.classList.remove('busy');
   }
 
   /* ---------- 启动：拉取真实数据，并每 60s 轮询最新收盘数据 ---------- */
