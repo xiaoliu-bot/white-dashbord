@@ -10,7 +10,7 @@
   （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
-import json, time, os, datetime, socket, threading
+import json, time, os, datetime, socket, threading, urllib.request
 import akshare as ak
 import pandas as pd
 import warnings
@@ -184,31 +184,44 @@ def fetch_indices_jq(jq):
     return out
 
 # === 黄金 ===
-def fetch_gold():
-    """国际金价 + 估算国内金价"""
-    try:
-        raw = ak.gold_spot_price()
-        print(f"  黄金字段: {raw.columns.tolist()}")
-        print(f"  {raw.head(2)}")
-    except Exception as e:
-        print(f"  黄金接口: {e}")
-    # 直接用 Gold-API
-    try:
-        import urllib.request
+def fetch_usdcny():
+    """实时美元兑人民币（免费接口，带超时与兜底）。"""
+    def _go():
         req = urllib.request.Request(
-            "https://api.gold-api.com/price/XAU",
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
+            "https://open.er-api.com/v6/latest/USD",
+            headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.loads(r.read())
+        rate = float(d['rates']['CNY'])
+        if 6.0 < rate < 8.0:   # 合理区间校验，避免脏数据
+            return rate
+        raise ValueError(f"汇率异常 {rate}")
+    return _call_with_timeout(_go, 12, 7.2, "美元兑人民币")
+
+
+def fetch_gold(prev_gold=None):
+    """国际金价(XAU/USD) + 实时汇率换算的国内金价；涨跌幅与上一次快照比较。"""
+    def _go():
+        req = urllib.request.Request(
+            "https://api.gold-api.com/price/XAU",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
+    d = _call_with_timeout(_go, 12, None, "Gold-API")
+    if not d:
+        return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0, 'fx': 0}
+    try:
         price = float(d['price'])
-        pct = 0.01  # 简化
-        cny = round(price / 31.1035 * 7.25, 2)
-        print(f"  ✅ 黄金: {price} USD/oz")
-        return {'usd': round(price, 2), 'usd_pct': pct, 'cny': cny, 'cny_pct': pct}
-    except Exception as e:
-        print(f"  ❌ 黄金: {e}")
-        return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0}
+    except (KeyError, TypeError, ValueError):
+        return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0, 'fx': 0}
+    fx = fetch_usdcny()
+    cny = round(price / 31.1035 * fx, 2)
+    usd_pct = 0.0
+    if prev_gold and prev_gold.get('usd'):
+        usd_pct = round((price - prev_gold['usd']) / prev_gold['usd'] * 100, 2)
+    print(f"  ✅ 黄金: {price} USD/oz | 汇率 {fx} | {cny} 元/克 | 涨跌 {usd_pct}%")
+    return {'usd': round(price, 2), 'usd_pct': usd_pct,
+            'cny': cny, 'cny_pct': round(usd_pct, 2), 'fx': round(fx, 4)}
 
 # === 板块资金流（AKShare）===
 # 用户持仓板块名称 → 东财/同花顺行业板块关键词
@@ -511,7 +524,7 @@ def main():
         print(f"  · 聚宽索引异常: {e}")
 
     print("[2/4] 黄金...")
-    gold = fetch_gold()
+    gold = fetch_gold(prev.get('gold'))
 
     print("[3/4] 板块资金流...")
     plate_data = fetch_plate_data()
