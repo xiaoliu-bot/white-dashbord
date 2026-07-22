@@ -363,54 +363,60 @@ def fetch_citic_futures():
     try:
         import akshare as ak
         from datetime import date as _d, timedelta as _td
-        day = None
+        # 取最近若干交易日，直到取到已发布的中金所持仓排名（当日约 16:30 后发布）
+        candidate_days = []
         for i in range(0, 6):
             d = _d.today() - _td(days=i)
             if d.weekday() < 5:
-                day = d.strftime('%Y%m%d')
-                break
-        if not day:
+                candidate_days.append(d.strftime('%Y%m%d'))
+        if not candidate_days:
             return {}
-        print(f"  · 中信期指：取中金所持仓排名 {day}")
-        tbl = ak.get_cffex_rank_table(date=day)   # dict: symbol -> DataFrame
         targets = {'IF': '沪深300', 'IC': '中证500', 'IH': '上证50', 'IM': '中证1000'}
-        out = {'date': day, 'contracts': {}, 'total': {'long': 0, 'short': 0, 'net': 0}}
-        for sym, label in targets.items():
-            df = tbl.get(sym)
-            if df is None or (hasattr(df, 'empty') and df.empty):
+        for day in candidate_days:
+            print(f"  · 中信期指：取中金所持仓排名 {day}")
+            try:
+                tbl = ak.get_cffex_rank_table(date=day)   # dict: symbol -> DataFrame
+            except Exception as e:
+                print(f"  · 中信期指 {day} 获取失败: {str(e)[:60]}")
                 continue
-            cols = list(df.columns)
-            # 兼容中英文列名找「会员名称」与「多/空持仓」
-            name_col = None
-            for c in cols:
-                s = str(c)
-                if any(k in s for k in ['party', 'Party', '会员', '名称', 'name', 'Name']):
-                    name_col = c
-                    break
-            long_col = short_col = None
-            for c in cols:
-                s = str(c).lower()
-                if 'long' in s and any(k in s for k in ['open', 'interest', 'position', '买', '多']):
-                    long_col = c
-                if 'short' in s and any(k in s for k in ['open', 'interest', 'position', '卖', '空']):
-                    short_col = c
-            if name_col is None or long_col is None or short_col is None:
-                print(f"  · 中信期指 {sym} 列名未识别: {cols}")
-                continue
-            sub = df[df[name_col].astype(str).str.contains('中信', na=False)]
-            if sub.empty:
-                continue
-            long_v = float(sub[long_col].iloc[0] or 0)
-            short_v = float(sub[short_col].iloc[0] or 0)
-            out['contracts'][sym] = {'label': label, 'long': int(long_v),
-                                     'short': int(short_v), 'net': int(long_v - short_v)}
-            out['total']['long'] += int(long_v)
-            out['total']['short'] += int(short_v)
-            out['total']['net'] += int(long_v - short_v)
-        if out['contracts']:
-            print(f"  ✅ 中信期指多空 {day}: {list(out['contracts'].keys())} 总净仓 {out['total']['net']} 手")
-            return out
-        print("  · 中信期指：未取到中信持仓（可能当日尚未发布）")
+            out = {'date': day, 'contracts': {}, 'total': {'long': 0, 'short': 0, 'net': 0}}
+            for sym, label in targets.items():
+                df = tbl.get(sym)
+                if df is None or (hasattr(df, 'empty') and df.empty):
+                    continue
+                cols = list(df.columns)
+                # 兼容中英文列名找「会员名称」与「多/空持仓」
+                name_col = None
+                for c in cols:
+                    s = str(c)
+                    if any(k in s for k in ['party', 'Party', '会员', '名称', 'name', 'Name']):
+                        name_col = c
+                        break
+                long_col = short_col = None
+                for c in cols:
+                    s = str(c).lower()
+                    if 'long' in s and any(k in s for k in ['open', 'interest', 'position', '买', '多']):
+                        long_col = c
+                    if 'short' in s and any(k in s for k in ['open', 'interest', 'position', '卖', '空']):
+                        short_col = c
+                if name_col is None or long_col is None or short_col is None:
+                    print(f"  · 中信期指 {sym} 列名未识别: {cols}")
+                    continue
+                sub = df[df[name_col].astype(str).str.contains('中信', na=False)]
+                if sub.empty:
+                    continue
+                long_v = float(sub[long_col].iloc[0] or 0)
+                short_v = float(sub[short_col].iloc[0] or 0)
+                out['contracts'][sym] = {'label': label, 'long': int(long_v),
+                                         'short': int(short_v), 'net': int(long_v - short_v)}
+                out['total']['long'] += int(long_v)
+                out['total']['short'] += int(short_v)
+                out['total']['net'] += int(long_v - short_v)
+            if out['contracts']:
+                print(f"  ✅ 中信期指多空 {day}: {list(out['contracts'].keys())} 总净仓 {out['total']['net']} 手")
+                return out
+        print("  · 中信期指：近几个交易日均未取到中信持仓")
+        return {}
         return {}
     except Exception as e:
         print(f"  ❌ 中信期指多空: {e}")
