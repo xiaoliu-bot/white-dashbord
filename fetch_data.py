@@ -648,6 +648,101 @@ def fetch_citic_futures(prev_citic=None):
         print(f"  ❌ 中信期指多空: {e}")
         return prev_citic or {}
 
+# === 吸筹/出货 判断逻辑 ===
+MAIN_COLS = ['今日主力净流入-净额', '主力净流入', '主力净流入-净额', '主力净买额', '主力净额']
+RETAIL_COLS = ['今日小单净流入-净额', '小单净流入', '小单净流入-净额', '小单净买额', '小单净额']
+
+def _try_cols(row, names, default=0):
+    for n in names:
+        v = row.get(n)
+        if v not in (None, ''):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    return default
+
+def load_history(days=5):
+    """读取 api/history/ 下最近 days 天，构建 板块名->[每日主力] 列表（用于累计判断）"""
+    hm = {}
+    try:
+        hist_dir = 'api/history'
+        if os.path.isdir(hist_dir):
+            files = sorted(f for f in os.listdir(hist_dir) if f.endswith('.json'))[-days:]
+            for f in files:
+                with open(os.path.join(hist_dir, f), encoding='utf-8') as fh:
+                    dat = json.load(fh)
+                for pf in dat.get('plateFlows', []):
+                    hm.setdefault(pf.get('name'), []).append({'主力': pf.get('主力', 0) or 0})
+    except Exception as e:
+        print(f"  ⚠️ 历史累计跳过: {e}")
+    return hm
+
+def classify_plate(plate, history=None):
+    """
+    板块吸筹/出货判断。打分（+吸筹 / -出货），成分：
+      1) 主力方向（±70，金额归一）：净流入→+，净流出→-
+      2) 主力/散户背离（±15）：主力进+散户退=典型吸筹；主力退+散户进=典型出货
+      3) 价格上下文（±8）：流入未大涨=低位吸筹；已大涨仍流入=警惕追高；
+                          上涨中主力流出=高位派发；下跌中主力流出=出货延续
+    信号：主力净流入→吸筹；净流出→出货（不再设<5亿中性/噪声阈值，所有板块非红即绿）。
+    强度：|score|>=45 强；>=20 温和；否则 弱。
+    """
+    main = plate.get('主力', 0) or 0
+    retail = plate.get('散户', 0) or 0
+    pct = plate.get('pct', 0) or 0
+
+    if history:
+        flow = sum((h.get('主力', 0) or 0) for h in history)
+        fkind = '近%d日累计主力' % len(history)
+    else:
+        flow = main
+        fkind = '当日主力'
+
+    score = 0.0
+    reasons = []
+    mag = min(abs(flow) / 1.5e10, 1.0)   # 150亿满格
+    if flow > 0:
+        score += 70 * mag
+        reasons.append('%s净流入' % fkind)
+    elif flow < 0:
+        score -= 70 * mag
+        reasons.append('%s净流出' % fkind)
+
+    if main > 0 and retail < 0:
+        score += 15
+        reasons.append('主力吸筹+散户割肉')
+    elif main < 0 and retail > 0:
+        score -= 15
+        reasons.append('主力派发+散户接盘')
+    elif main > 0 and retail > 0:
+        score -= 4
+        reasons.append('主力散户同进(偏追高)')
+    elif main < 0 and retail < 0:
+        score += 4
+        reasons.append('主力散户同退(偏恐慌)')
+
+    if main > 0 and pct <= 3:
+        score += 8
+        reasons.append('流入未大涨·低位吸筹')
+    elif main > 0 and pct > 5:
+        score -= 5
+        reasons.append('已大涨仍在流入·警惕追高')
+    elif main < 0 and pct > 3:
+        score -= 8
+        reasons.append('上涨中主力流出·高位派发')
+    elif main < 0 and pct <= 0:
+        score -= 4
+        reasons.append('下跌中主力流出·出货延续')
+
+    score = round(score, 1)
+    # 信号：主力净流入→吸筹；净流出→出货（去掉<5亿中性/噪声判定，所有板块非红即绿）
+    signal = '吸筹' if flow >= 0 else '出货'
+    a = abs(score)
+    strength = '强' if a >= 45 else ('温和' if a >= 20 else '弱')
+    return {'signal': signal, 'strength': strength, 'score': score, 'reason': '；'.join(reasons)}
+
+
 def main():
     socket.setdefaulttimeout(30)   # 兜底：任何网络调用卡死都在 30s 内失败，避免整条流水线挂起
     today = datetime.date.today().strftime('%Y-%m-%d')
@@ -698,14 +793,21 @@ def main():
     print("[3/4] 板块资金流...")
     plate_data = fetch_plate_data()
     plateFlows = []
+    history_map = load_history(5)   # 近5日累计主力，用于更稳的吸筹/出货判断
     for plate_name in ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',
                        '新能源电池', '锂矿', 'CPO', 'PCB', '创新药']:
         d = plate_data.get(plate_name, {})
         net = d.get('net', 0)
-        zhu = int(net * 0.55)
-        da = int(net * 0.28)
-        san = net - zhu - da
-        print(f"  {plate_name}: {d.get('行业名','?')} | {d.get('pct',0):+.2f}% | 净额:{(net/1e8):+.2f}亿 [{d.get('source','未知')}]")
+        zhu = d.get('主力')
+        if zhu is None: zhu = int(net * 0.55)
+        da = d.get('大户')
+        if da is None: da = int(net * 0.28)
+        san = d.get('散户')
+        if san is None: san = net - zhu - da
+        # 吸筹/出货 判断（去掉<5亿中性/噪声阈值，所有板块非红即绿）
+        cls = classify_plate({'主力': zhu, '散户': san, 'pct': d.get('pct', 0)},
+                             history=history_map.get(plate_name))
+        print(f"  {plate_name}: {d.get('行业名','?')} | {d.get('pct',0):+.2f}% | 净额:{(net/1e8):+.2f}亿 | {cls['signal']}({cls['strength']}) [{d.get('source','未知')}]")
         plateFlows.append({
             'name': plate_name,
             'code': '',
@@ -713,6 +815,10 @@ def main():
             '行业名': d.get('行业名', ''),
             '散户': san, '大户': da, '主力': zhu, 'net': net,
             'source': d.get('source', '未知'),
+            'signal': cls['signal'],
+            'strength': cls['strength'],
+            'score': cls['score'],
+            'reason': cls['reason'],
         })
     plateStale = False
     if all(p.get('net', 0) == 0 for p in plateFlows) and prev.get('plateFlows'):

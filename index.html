@@ -116,6 +116,9 @@
   .bubble .name{font-size:11px;font-weight:700;line-height:1.1;text-shadow:0 1px 2px rgba(0,0,0,.4);padding:0 4px;}
   .bubble .amt{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:700;font-size:10px;line-height:1.2;
     text-shadow:0 1px 2px rgba(0,0,0,.4);}
+  .bubble.gray{background:radial-gradient(circle at 34% 30%,#5b5b66,#2c2c33);}
+  .stag.cold{background:rgba(16,185,129,.16);color:#34d399;border-color:rgba(16,185,129,.4);}
+  .legend.mid{background:rgba(120,120,135,.12);color:#a1a1aa;border-color:rgba(120,120,135,.35);}
 
   .foot{margin-top:6px;font-size:12px;color:var(--faint);display:flex;justify-content:space-between;
     flex-wrap:wrap;gap:10px;border-top:1px solid var(--border);padding-top:14px;}
@@ -138,9 +141,32 @@
   .rbtn:disabled{opacity:.5;cursor:not-allowed;}
   .rbtn.busy{border-color:var(--green);color:var(--green);}
   .rtip{font-size:11px;color:var(--faint);margin-left:4px;max-width:260px;}
+
+  /* ── 开屏赞赏海报（iframe 载入 donate.html，样式隔离）── */
+  html.splash-dismissed #splash{display:none;}
+  #splash{position:fixed;inset:0;z-index:9999;background:var(--bg);}
+  #splash iframe{width:100%;height:100%;border:0;display:block;background:transparent;}
+  #splash .enter-btn{position:absolute;left:50%;bottom:30px;transform:translateX(-50%);z-index:2;
+    background:linear-gradient(135deg,#F43F5E,#F5B301);color:#0A0A0B;border:0;border-radius:999px;
+    padding:12px 30px;font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.45);transition:filter .15s;}
+  #splash .enter-btn:hover{filter:brightness(1.08);}
+  /* 右下角常驻赞赏按钮：开屏关闭后可随时重新唤起海报 */
+  #donate-fab{position:fixed;right:22px;bottom:22px;z-index:50;display:inline-flex;align-items:center;gap:6px;
+    background:linear-gradient(135deg,#F43F5E,#F5B301);color:#0A0A0B;border:0;border-radius:999px;
+    padding:11px 18px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 8px 22px rgba(244,63,94,.45);
+    transition:transform .15s,box-shadow .15s;}
+  #donate-fab:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(244,63,94,.55);}
+  #donate-fab:active{transform:translateY(0);}
 </style>
 </head>
 <body>
+
+<!-- 开屏赞赏海报（iframe 载入 donate.html，样式与主页隔离） -->
+<div id="splash">
+  <iframe src="donate.html" title="赞赏海报"></iframe>
+  <button class="enter-btn" id="splash-enter">进入看板 →</button>
+</div>
+
 <div class="wrap">
 
   <div class="head">
@@ -328,11 +354,12 @@
     const box = $('#sectors'); box.innerHTML = '';
     flows.forEach(d=>{
       const up = (d.pct||0) >= 0;
-      const inflow = (d.net||0) >= 0;
+      const sig = d.signal || (d.net>=0 ? '吸筹' : '出货');
+      const cls = sig==='吸筹' ? 'hot' : (sig==='出货' ? 'cold' : '');
       const el = document.createElement('div'); el.className = 'stile' + (up?' hot':'');
       el.innerHTML = `<div class="sname">${d.name}</div>
         <div class="schg mono ${up?'up':'down'}">${(up?'+':'') + Number(d.pct||0).toFixed(2)}%</div>
-        <div class="stag ${up?'hot':''}">${up?'上涨':'下跌'} · ${inflow?'吸筹':'出货'}</div>`;
+        <div class="stag ${cls}">${sig} · ${d.strength||''}</div>`;
       box.appendChild(el);
     });
     if(!flows.length) box.innerHTML = '<div class="stile"><div class="sname">板块数据暂缺</div></div>';
@@ -360,35 +387,62 @@
     $('#goldChart').innerHTML = goldBar(g.usd_pct||0);
   }
 
-  /* ---------- M4 气泡图（真实资金流净额） ---------- */
+  /* ---------- M4 气泡图（真实资金流净额 · 簇拥布局） ---------- */
   const panel = $('#panel');
   function renderBubbles(){
-    const flows = (DATA.plateFlows || []).map(d=>({name:d.name, v:yi(d.net)}));
+    const flows = (DATA.plateFlows || []).map(d=>({name:d.name, v:yi(d.net), signal:d.signal, strength:d.strength, reason:d.reason}));
     maxAbsV = Math.max(1, ...flows.map(d=>Math.abs(d.v)));
     const red = [], green = [];
     flows.forEach(d=>{
       let b = bubbleMap[d.name];
       if(!b){ b = {name:d.name, el:document.createElement('div')}; b.el.className='bubble'; b.el.innerHTML='<span class="name"></span><span class="amt"></span>'; panel.appendChild(b.el); bubbleMap[d.name]=b; }
-      b.v = d.v;
-      (d.v >= 0 ? red : green).push(b);
+      b.v = d.v; b.signal = d.signal; b.strength = d.strength; b.reason = d.reason;
+      const sig = (d.signal==='吸筹') ? 'red' : (d.signal==='出货' ? 'green' : (d.net>=0?'red':'green'));
+      (sig==='red'?red:green).push(b);
     });
     red.forEach(b=> b.el.className = 'bubble red');
     green.forEach(b=> b.el.className = 'bubble green');
-    layout('red', red); layout('green', green);
+    layoutGroup('red', red); layoutGroup('green', green);
   }
-  function layout(group, list){
-    const W = panel.clientWidth, cx = W/2, cy = group==='red'?130:390, margin = 70;
+  function bubbleRadius(v){ return Math.max(24, 95 * Math.sqrt(Math.abs(v) / maxAbsV)); }
+  function layoutGroup(group, list){
+    const W = panel.clientWidth, H = panel.clientHeight, centerY = H/2;
     const sorted = [...list].sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
-    const n = sorted.length, gap = Math.min(215, (W - 2*margin) / Math.max(n,1));
-    const radius = v => Math.max(26, 110 * Math.sqrt(Math.abs(v) / maxAbsV));
-    sorted.forEach((b,i)=>{
-      const r = radius(b.v);
-      let x = i===0 ? cx : cx + ((i%2===1?-1:1)) * Math.ceil(i/2) * gap;
-      x = Math.max(margin, Math.min(W - margin, x));
-      b.el.style.width = (r*2)+'px'; b.el.style.height = (r*2)+'px';
-      b.el.style.left = (x-r)+'px'; b.el.style.top = (cy-r)+'px';
-      b.el.querySelector('.name').textContent = b.name;
-      b.el.querySelector('.amt').textContent = (b.v>=0?'+':'-') + Math.abs(b.v).toFixed(1) + '亿';
+    sorted.forEach(b=> b.r = bubbleRadius(b.v));
+    if(!sorted.length) return;
+    const anchor = sorted[0];                 // 本半边最大的球 = 锚点
+    anchor.x = W/2;
+    anchor.y = group==='red' ? (centerY - anchor.r - 10) : (centerY + anchor.r + 10);  // 靠中线
+    sorted.slice(1).forEach((b,i)=>{          // 其余球初始环绕锚点
+      const ang = i * 2.39996323;             // 黄金角，均匀铺开
+      const dist = anchor.r + b.r + 16 + Math.floor(i/6)*42;
+      b.x = anchor.x + Math.cos(ang)*dist;
+      b.y = anchor.y + Math.sin(ang)*dist;
+    });
+    for(let it=0; it<140; it++){
+      for(const b of sorted){                 // 向锚点聚拢 = 小球簇拥大球
+        b.x += (anchor.x - b.x) * 0.02;
+        b.y += (anchor.y - b.y) * 0.02;
+      }
+      for(let a=0;a<sorted.length;a++) for(let c=a+1;c<sorted.length;c++){  // 两两斥力 = 不重叠
+        const A=sorted[a], B=sorted[c];
+        let dx=B.x-A.x, dy=B.y-A.y; let d=Math.hypot(dx,dy)||0.01;
+        const min=A.r+B.r+6;
+        if(d<min){ const f=(min-d)/d*0.5; dx*=f; dy*=f; A.x-=dx; A.y-=dy; B.x+=dx; B.y+=dy; }
+      }
+      for(const b of sorted){                 // 边界 + 半区约束（不越过分隔线）
+        b.x = Math.max(b.r+6, Math.min(W-b.r-6, b.x));
+        b.y = Math.max(b.r+6, Math.min(H-b.r-6, b.y));
+        if(group==='red') b.y = Math.min(b.y, centerY - b.r - 5);
+        else b.y = Math.max(b.y, centerY + b.r + 5);
+      }
+    }
+    sorted.forEach(b=>{
+      b.el.style.width=(b.r*2)+'px'; b.el.style.height=(b.r*2)+'px';
+      b.el.style.left=(b.x-b.r)+'px'; b.el.style.top=(b.y-b.r)+'px';
+      b.el.querySelector('.name').textContent=b.name;
+      b.el.querySelector('.amt').textContent=(b.v>=0?'+':'-')+Math.abs(b.v).toFixed(1)+'亿';
+      b.el.title=(b.strength?('['+b.strength+'] '):'')+(b.reason||'')+'　'+(b.v>=0?'+':'-')+Math.abs(b.v).toFixed(1)+'亿';
     });
   }
 
@@ -554,10 +608,27 @@
     if(DATA){
       const s = isLive ? liveSeries : (HIST[activeDate]);
       if(s) renderChart(s, isLive ? s.length-1 : (+($('#histTime').value)||s.length-1));
-      layout('red', Object.values(bubbleMap).filter(b=>b.el.classList.contains('red')));
-      layout('green', Object.values(bubbleMap).filter(b=>b.el.classList.contains('green')));
+      layoutGroup('red', Object.values(bubbleMap).filter(b=>b.el.classList.contains('red')));
+      layoutGroup('green', Object.values(bubbleMap).filter(b=>b.el.classList.contains('green')));
     }
   });
+</script>
+
+<!-- 右下角常驻赞赏按钮 -->
+<button id="donate-fab" title="赞赏支持">♥ 赞赏</button>
+
+<script>
+  /* 开屏赞赏海报：进入看板 / Esc 关闭（仅本次访问）；右下角赞赏按钮可随时重新唤起 */
+  (function(){
+    var root=document.documentElement;
+    function dismissSplash(){root.classList.add('splash-dismissed');}
+    function openSplash(){root.classList.remove('splash-dismissed');}
+    var enter=document.getElementById('splash-enter');
+    if(enter) enter.addEventListener('click',dismissSplash);
+    var fab=document.getElementById('donate-fab');
+    if(fab) fab.addEventListener('click',openSplash);
+    document.addEventListener('keydown',function(e){ if(e.key==='Escape') dismissSplash(); });
+  })();
 </script>
 </body>
 </html>
