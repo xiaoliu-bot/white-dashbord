@@ -240,6 +240,26 @@
     border-radius: 8px;
   }
 
+  /* 收款码缺失时的“待上传”占位卡（白底、深色文字） */
+  .qr-ph {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    text-align: center;
+    color: #333;
+    border: 2px dashed rgba(0, 0, 0, 0.18);
+    border-radius: 10px;
+    background: repeating-linear-gradient(45deg, #fafafa, #fafafa 10px, #f0f0f0 10px, #f0f0f0 20px);
+    padding: 8px;
+  }
+  .qr-ph-t { font-weight: 700; font-size: 0.95rem; }
+  .qr-ph-tip { font-size: 0.76rem; color: #555; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .qr-ph-dim { font-size: 0.7rem; color: #888; }
+
   /* 角落的扫描提示 */
   .scan-hint {
     display: inline-flex;
@@ -378,12 +398,23 @@
 </div>
 
 <script>
-  /* 收款码图片缺失时的优雅占位（请放入你的二维码到 assets/ 目录） */
+  /* 收款码图片缺失时的优雅占位：请把你的二维码保存为对应文件名放入 assets/ 目录 */
+  var REQ = {
+    '微信赞赏码': { tip: '微信：保存为 wechat-pay-cropped.png' },
+    '支付宝收款码': { tip: '支付宝：保存为 alipay.jpg' }
+  };
   document.querySelectorAll('.qr-wrap img').forEach(function (img) {
     img.addEventListener('error', function () {
       var box = img.parentNode;
-      var name = img.alt === '微信赞赏码' ? 'assets/wechat-pay-cropped.png' : 'assets/alipay.jpg';
-      box.innerHTML = '<div style="color:var(--text-soft);font-weight:600;text-align:center;line-height:1.6">收款码图片缺失<br><span style="font-weight:400;font-size:.8rem">请放入 ' + name + '</span></div>';
+      var r = REQ[img.alt] || { tip: '放入 ' + (img.getAttribute('src') || '') };
+      box.innerHTML =
+        '<div class="qr-ph">' +
+        '<svg viewBox="0 0 24 24" width="32" height="32" fill="rgba(0,0,0,0.4)">' +
+        '<path d="M12 5a2 2 0 0 1 2 2v4h4a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h4V7a2 2 0 0 1 2-2zm0 4h.01M7 15h10v4H7z"/></svg>' +
+        '<div class="qr-ph-t">收款码待上传</div>' +
+        '<div class="qr-ph-tip">' + r.tip + '</div>' +
+        '<div class="qr-ph-dim">建议 240×240 以上 PNG / JPG</div>' +
+        '</div>';
     });
   });
 </script>

@@ -10,7 +10,7 @@
   （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
-import json, time, os, datetime, socket, threading, random, urllib.request
+import json, time, os, datetime, socket, threading, random, math, urllib.request
 import warnings
 from urllib.parse import urlparse
 import ssl
@@ -678,7 +678,7 @@ def load_history(days=5):
         print(f"  ⚠️ 历史累计跳过: {e}")
     return hm
 
-def classify_plate(plate, history=None):
+def classify_plate(plate, history=None, flow_max=None):
     """
     板块吸筹/出货判断。打分（+吸筹 / -出货），成分：
       1) 主力方向（±70，金额归一）：净流入→+，净流出→-
@@ -701,7 +701,8 @@ def classify_plate(plate, history=None):
 
     score = 0.0
     reasons = []
-    mag = min(abs(flow) / 1.5e10, 1.0)   # 150亿满格
+    denom = flow_max if (flow_max and flow_max > 0) else 1.5e10
+    mag = min(math.sqrt(abs(flow) / denom), 1.0) if denom > 0 else 0   # sqrt 动态归一：金额梯度更柔，小板块也能拿到方向分（默认150亿兜底）
     if flow > 0:
         score += 70 * mag
         reasons.append('%s净流入' % fkind)
@@ -794,8 +795,11 @@ def main():
     plate_data = fetch_plate_data()
     plateFlows = []
     history_map = load_history(5)   # 近5日累计主力，用于更稳的吸筹/出货判断
-    for plate_name in ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',
-                       '新能源电池', '锂矿', 'CPO', 'PCB', '创新药']:
+    PLATE_ORDER = ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',
+                   '新能源电池', '锂矿', 'CPO', 'PCB', '创新药']
+    # 第一遍：收集各板块用于“方向”的 flow（近5日累计主力，无则用当日主力），求全局最大做动态归一
+    specs = []
+    for plate_name in PLATE_ORDER:
         d = plate_data.get(plate_name, {})
         net = d.get('net', 0)
         zhu = d.get('主力')
@@ -804,17 +808,29 @@ def main():
         if da is None: da = int(net * 0.28)
         san = d.get('散户')
         if san is None: san = net - zhu - da
-        # 吸筹/出货 判断（去掉<5亿中性/噪声阈值，所有板块非红即绿）
-        cls = classify_plate({'主力': zhu, '散户': san, 'pct': d.get('pct', 0)},
-                             history=history_map.get(plate_name))
-        print(f"  {plate_name}: {d.get('行业名','?')} | {d.get('pct',0):+.2f}% | 净额:{(net/1e8):+.2f}亿 | {cls['signal']}({cls['strength']}) [{d.get('source','未知')}]")
+        hist = history_map.get(plate_name)
+        flow = sum((h.get('主力', 0) or 0) for h in hist) if hist else zhu
+        specs.append({'name': plate_name, 'd': d, 'zhu': zhu, 'da': da,
+                      'san': san, 'hist': hist, 'net': net, 'flow': flow})
+    max_abs_flow = max((abs(s['flow']) for s in specs), default=0) or 1
+    # 第二遍：先按动态归一打分（signal + score），强度稍后按当批最大 |score| 动态分档
+    raw_cls = []
+    for s in specs:
+        cls = classify_plate({'主力': s['zhu'], '散户': s['san'], 'pct': s['d'].get('pct', 0)},
+                             history=s['hist'], flow_max=max_abs_flow)
+        raw_cls.append((s, cls))
+    max_abs_score = max((abs(c['score']) for _, c in raw_cls), default=0) or 1
+    for s, cls in raw_cls:
+        a = abs(cls['score'])
+        cls['strength'] = '强' if a >= 0.6 * max_abs_score else ('温和' if a >= 0.3 * max_abs_score else '弱')
+        print(f"  {s['name']}: {s['d'].get('行业名','?')} | {s['d'].get('pct',0):+.2f}% | 净额:{(s['net']/1e8):+.2f}亿 | {cls['signal']}({cls['strength']}) [{s['d'].get('source','未知')}]")
         plateFlows.append({
-            'name': plate_name,
+            'name': s['name'],
             'code': '',
-            'pct': d.get('pct', 0),
-            '行业名': d.get('行业名', ''),
-            '散户': san, '大户': da, '主力': zhu, 'net': net,
-            'source': d.get('source', '未知'),
+            'pct': s['d'].get('pct', 0),
+            '行业名': s['d'].get('行业名', ''),
+            '散户': s['san'], '大户': s['da'], '主力': s['zhu'], 'net': s['net'],
+            'source': s['d'].get('source', '未知'),
             'signal': cls['signal'],
             'strength': cls['strength'],
             'score': cls['score'],
