@@ -1,6 +1,6 @@
 {
   "updated": "2026-07-27",
-  "time": "14:38:45",
+  "time": "15:03:01",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -10,9 +10,9 @@
     },
     "NDX": {
       "name": "纳指",
-      "price": 24864.82,
-      "chg": -111.0,
-      "pct": -0.44
+      "price": 24957.63,
+      "chg": -18.19,
+      "pct": -0.07
     },
     "HSTECH": {
       "name": "恒生科技",
@@ -22,10 +22,11 @@
     }
   },
   "gold": {
-    "usd": 4056.3,
-    "usd_pct": 0.01,
-    "cny": 945.49,
-    "cny_pct": 0.01
+    "usd": 4074.2,
+    "usd_pct": 0.44,
+    "cny": 887.8,
+    "cny_pct": 0.44,
+    "fx": 6.7777
   },
   "plateFlows": [
     {
@@ -39,8 +40,8 @@
       "net": 68594000000,
       "source": "概念",
       "signal": "吸筹",
-      "strength": "温和",
-      "score": 39.3,
+      "strength": "强",
+      "score": 50.6,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -55,7 +56,7 @@
       "source": "行业",
       "signal": "吸筹",
       "strength": "强",
-      "score": 60.0,
+      "score": 66.1,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)；流入未大涨·低位吸筹"
     },
     {
@@ -70,7 +71,7 @@
       "source": "行业",
       "signal": "吸筹",
       "strength": "弱",
-      "score": -2.7,
+      "score": 5.6,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -84,8 +85,8 @@
       "net": 1058000000,
       "source": "概念",
       "signal": "吸筹",
-      "strength": "温和",
-      "score": 24.8,
+      "strength": "强",
+      "score": 40.5,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -100,7 +101,7 @@
       "source": "行业",
       "signal": "吸筹",
       "strength": "弱",
-      "score": 1.9,
+      "score": 16.2,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -115,7 +116,7 @@
       "source": "行业",
       "signal": "吸筹",
       "strength": "弱",
-      "score": 1.9,
+      "score": 16.2,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -129,8 +130,8 @@
       "net": 9901000000,
       "source": "概念",
       "signal": "吸筹",
-      "strength": "温和",
-      "score": 31.7,
+      "strength": "强",
+      "score": 45.6,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -159,8 +160,8 @@
       "net": 11572000000,
       "source": "概念",
       "signal": "吸筹",
-      "strength": "温和",
-      "score": 25.4,
+      "strength": "强",
+      "score": 41.0,
       "reason": "近2日累计主力净流入；主力散户同进(偏追高)"
     },
     {
@@ -175,7 +176,7 @@
       "source": "行业",
       "signal": "出货",
       "strength": "弱",
-      "score": -4.9,
+      "score": -12.0,
       "reason": "近2日累计主力净流出；主力散户同进(偏追高)"
     }
   ],
@@ -215,7 +216,7 @@
   },
   "stale": {
     "indices": false,
-    "gold": true,
+    "gold": false,
     "plateFlows": false,
     "citic": false
   }
