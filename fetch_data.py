@@ -680,35 +680,42 @@ def load_history(days=5):
 
 def classify_plate(plate, history=None, flow_max=None):
     """
-    板块吸筹/出货判断。打分（+吸筹 / -出货），成分：
-      1) 主力方向（±70，金额归一）：净流入→+，净流出→-
+    板块吸筹/出货判断。打分（+吸筹 / -出货）：
+      方向【严格看当日净额】：净流入→吸筹(红)，净流出→出货(绿)。history 只做强度加成，绝不反转方向。
+      1) 主力方向（±70，金额 sqrt 动态归一）：当日净流入→+，净流出→-
       2) 主力/散户背离（±15）：主力进+散户退=典型吸筹；主力退+散户进=典型出货
       3) 价格上下文（±8）：流入未大涨=低位吸筹；已大涨仍流入=警惕追高；
                           上涨中主力流出=高位派发；下跌中主力流出=出货延续
-    信号：主力净流入→吸筹；净流出→出货（不再设<5亿中性/噪声阈值，所有板块非红即绿）。
-    强度：|score|>=45 强；>=20 温和；否则 弱。
+      4) 持续性（±6）：近5日累计主力与当日同向→加强；反向→削弱（不反转方向）
+    信号：当日净额>0→吸筹，<0→出货（所有板块非红即绿，无中性）。
+    强度：按当批最大 |score| 的 0.6/0.3 动态分档（强/温和/弱），在 main() 里二次计算。
     """
     main = plate.get('主力', 0) or 0
     retail = plate.get('散户', 0) or 0
     pct = plate.get('pct', 0) or 0
-
-    if history:
-        flow = sum((h.get('主力', 0) or 0) for h in history)
-        fkind = '近%d日累计主力' % len(history)
-    else:
-        flow = main
-        fkind = '当日主力'
+    net = plate.get('net', 0) or 0             # 当日净额（净流入为正）—方向权威字段
+    today_flow = net if net != 0 else main     # net 缺失时回退当日主力
+    hist_flow = sum((h.get('主力', 0) or 0) for h in history) if history else 0
 
     score = 0.0
     reasons = []
     denom = flow_max if (flow_max and flow_max > 0) else 1.5e10
-    mag = min(math.sqrt(abs(flow) / denom), 1.0) if denom > 0 else 0   # sqrt 动态归一：金额梯度更柔，小板块也能拿到方向分（默认150亿兜底）
-    if flow > 0:
+    mag = min(math.sqrt(abs(today_flow) / denom), 1.0) if denom > 0 else 0
+    if today_flow > 0:
         score += 70 * mag
-        reasons.append('%s净流入' % fkind)
-    elif flow < 0:
+        reasons.append('当日净流入')
+    elif today_flow < 0:
         score -= 70 * mag
-        reasons.append('%s净流出' % fkind)
+        reasons.append('当日净流出')
+
+    # 持续性：history 与当日同向加强、反向削弱（绝不反转方向）
+    if hist_flow != 0 and today_flow != 0:
+        if (hist_flow > 0) == (today_flow > 0):
+            score += 6 * (1 if today_flow > 0 else -1)
+            reasons.append('近5日持续%s' % ('吸筹' if today_flow > 0 else '出货'))
+        else:
+            score -= 4 * (1 if today_flow > 0 else -1)
+            reasons.append('近5日与当日反向·警惕反转')
 
     if main > 0 and retail < 0:
         score += 15
@@ -737,8 +744,8 @@ def classify_plate(plate, history=None, flow_max=None):
         reasons.append('下跌中主力流出·出货延续')
 
     score = round(score, 1)
-    # 信号：主力净流入→吸筹；净流出→出货（去掉<5亿中性/噪声判定，所有板块非红即绿）
-    signal = '吸筹' if flow >= 0 else '出货'
+    # 方向严格看当日净额（不再用 history 累计翻方向）
+    signal = '吸筹' if today_flow >= 0 else '出货'
     a = abs(score)
     strength = '强' if a >= 45 else ('温和' if a >= 20 else '弱')
     return {'signal': signal, 'strength': strength, 'score': score, 'reason': '；'.join(reasons)}
@@ -809,14 +816,14 @@ def main():
         san = d.get('散户')
         if san is None: san = net - zhu - da
         hist = history_map.get(plate_name)
-        flow = sum((h.get('主力', 0) or 0) for h in hist) if hist else zhu
+        flow = net if net != 0 else zhu   # 方向/归一都改用当日净额，不再用 history 累计
         specs.append({'name': plate_name, 'd': d, 'zhu': zhu, 'da': da,
                       'san': san, 'hist': hist, 'net': net, 'flow': flow})
     max_abs_flow = max((abs(s['flow']) for s in specs), default=0) or 1
     # 第二遍：先按动态归一打分（signal + score），强度稍后按当批最大 |score| 动态分档
     raw_cls = []
     for s in specs:
-        cls = classify_plate({'主力': s['zhu'], '散户': s['san'], 'pct': s['d'].get('pct', 0)},
+        cls = classify_plate({'主力': s['zhu'], '散户': s['san'], 'pct': s['d'].get('pct', 0), 'net': s['net']},
                              history=s['hist'], flow_max=max_abs_flow)
         raw_cls.append((s, cls))
     max_abs_score = max((abs(c['score']) for _, c in raw_cls), default=0) or 1
