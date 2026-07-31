@@ -74,7 +74,7 @@ _HOST_INTERVAL = {
     "api.gold-api.com": 1.0,
     "open.er-api.com": 1.0,
     "push2.eastmoney.com": 1.5,
-    "push2his.eastmoney.com": 0.5,
+    "push2his.eastmoney.com": 1.5,
 }
 
 def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
@@ -540,7 +540,7 @@ def fetch_plate_data_eastmoney():
 # push2his.eastmoney.com 在海外正常（已 probe 验证）。板块级 push2his 只服务个股 secid，
 # 故对每板块的代表成分股逐只拉五档(主力/超大单/大单/中单/小单)，求和后按 AKShare 板块净额
 # 缩放，得到真实「主力/大户(中单)/散户(小单)」拆分——既拿到真实形状，量级又与看板 net 一致。
-# 限速：复用 _http_get，已在 _HOST_INTERVAL 配置 0.5s + 0~1s 随机抖动，避免触发东财限频/封禁。
+# 限速：复用 _http_get，_HOST_INTERVAL 已放宽到 1.5s + 0~1s 随机抖动；真实比率跨运行累积，单轮被限频也能自愈。
 # 成分股为人工精选的代表性标的（secid 稳定）；板块大调时维护 _PLATE_STOCKS 一次即可。
 
 # 板块名 -> 代表成分股 6 位代码（键必须与 PLATE_KEYWORDS 严格一致）
@@ -567,7 +567,7 @@ def _em_fflow_one(secid):
            "lmt=1&klt=101&secid=%s"
            "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56"
            % secid)
-    txt, ok = _http_get(url, timeout=10, retries=2, cache_ttl=180,
+    txt, ok = _http_get(url, timeout=10, retries=3, cache_ttl=180,
                         label="个股五档%s" % secid)
     if not ok:
         return None
@@ -583,60 +583,94 @@ def _em_fflow_one(secid):
     except Exception:
         return None
 
-def fetch_plate_em_push2his(all_flows):
-    """对 AKShare 已命中的板块，用 push2his 个股五档聚合真实主力/散户拆分。
-    返回 {板块名: {主力,大户,散户,超大单,大单,source,样本数}}，仅含成功聚合的板块。"""
-    out = {}
+def _accumulate_plate_ratios(all_flows, cached):
+    """逐板块尝试用 push2his 个股五档刷新真实「主力/大户/散户」比率；
+    成功则覆盖缓存，失败则沿用上一轮缓存（比率日内稳定，跨运行累积自愈）。
+    返回 (merged, fresh_n)：merged={板块名:{sc,sd,sz,sx,sample,fresh}}，
+    其中 sc/sd/sz/sx 为相对主力(=1)的份额（sc+sd=1 即超大+大，sz+sx=-1 即中+小）。"""
+    merged = {}
+    fresh_n = 0
     for plate, info in (all_flows or {}).items():
         stocks = _PLATE_STOCKS.get(plate)
         if not stocks:
+            if plate in cached:
+                merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
             continue
         sm = sc = sd = sz = sx = 0  # 主力/超大/大/中(大户)/小(散户) 累加
         got = 0
-        for code in stocks[:8]:   # 限制样本数，降低请求量/封禁概率
+        for code in stocks[:6]:     # 6 只代表股：足够刻画真实形状，压低请求量/封禁概率
             r = _em_fflow_one(_secid(code))
             if r is None:
                 continue
             m, c, d, z, x = r
             sm += m; sc += c; sd += d; sz += z; sx += x
             got += 1
-        if got == 0:
-            print("  · %s: push2his 个股全失败，跳过真实拆分" % plate)
-            continue
-        ak_net = info.get('net') or 0  # 元（AKShare 板块净额）
-        raw_main = sm
-        if raw_main == 0:
-            print("  · %s: 个股主力汇总为 0，跳过真实拆分" % plate)
-            continue
-        # 按 AKShare 板块净额缩放：保证量级一致、方向正确（真实拆分形状保留）
-        scale = ak_net / raw_main
-        主力 = round(sm * scale)
-        大户 = round(sz * scale)   # 中单
-        散户 = round(sx * scale)   # 小单
-        out[plate] = {
-            '主力': 主力, '大户': 大户, '散户': 散户,
-            '超大单': round(sc * scale), '大单': round(sd * scale),
-            'source': 'eastmoney-push2his', '样本数': got,
-        }
-        print("  ✅ %s: 真实拆分(样本%d) 主力%.2f亿 大户%.2f亿 散户%.2f亿"
-              % (plate, got, 主力/1e8, 大户/1e8, 散户/1e8))
-    return out
+        if got >= 2 and abs(sm) > 0:
+            merged[plate] = {
+                'sc': sc / sm, 'sd': sd / sm,
+                'sz': sz / sm, 'sx': sx / sm,
+                'sample': got, 'fresh': True,
+            }
+            fresh_n += 1
+            print("  ✅ %s: 真实比率刷新(样本%d) 主力100%% 大户%.0f%% 散户%.0f%%"
+                  % (plate, got, sz / sm * 100, sx / sm * 100))
+        elif plate in cached:
+            merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
+            print("  · %s: 本轮个股拉取失败，沿用上次真实比率" % plate)
+        else:
+            print("  · %s: push2his 个股全失败且无缓存，跳过" % plate)
+    return merged, fresh_n
 
 def write_plate_em(all_flows):
-    """生成 api/plate_em.json（结构与 index.html applyEastmoneyOverlay 期望一致：plates[板块名] 含 主力/大户/散户）。"""
-    plates = fetch_plate_em_push2his(all_flows)
+    """生成 api/plate_em.json（结构与 index.html applyEastmoneyOverlay 期望一致）。
+
+    关键改进——真实比率跨运行累积：本轮成功的板块刷新比率，失败的沿用上一轮缓存，
+    故即便东财对海外 CI 限频（单轮仅 1~2 板块成功），数轮之后 10 板块全部拿到真实拆分。
+    plates 为本轮可落盘的板块（主力=AKShare 净额，大户/散户=真实比率缩放）；
+    ratios 为全量比率缓存（含未在本轮落盘者），供下一轮续算。"""
+    cached = {}
+    if os.path.exists('api/plate_em.json'):
+        try:
+            old = json.load(open('api/plate_em.json', encoding='utf-8'))
+            cached = old.get('ratios', {}) or {}
+        except Exception:
+            cached = {}
+    merged, fresh_n = _accumulate_plate_ratios(all_flows, cached)
+    if not merged:
+        print("  · 无板块拿到真实拆分（且无缓存），跳过写 plate_em.json")
+        return
+    plates = {}
+    for plate, r in merged.items():
+        ak_net = (all_flows.get(plate) or {}).get('net') or 0  # 元（AKShare 板块净额）
+        if ak_net == 0:
+            continue
+        sc_s, sd_s, sz_s, sx_s = r['sc'], r['sd'], r['sz'], r['sx']
+        主力 = round(ak_net)
+        超大单 = round(sc_s * ak_net)
+        大单 = round(sd_s * ak_net)
+        大户 = round(sz_s * ak_net)   # 中单
+        散户 = round(sx_s * ak_net)   # 小单
+        plates[plate] = {
+            '主力': 主力, '大户': 大户, '散户': 散户,
+            '超大单': 超大单, '大单': 大单,
+            'source': 'eastmoney-push2his' + ('-live' if r.get('fresh') else '-cached'),
+            '样本数': r['sample'],
+        }
     if not plates:
-        print("  · 无板块拿到真实拆分，跳过写 plate_em.json")
+        print("  · 所有缓存板块 ak_net 为 0，跳过写")
         return
     payload = {
         'updated': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'source': 'eastmoney-push2his (CI 原生聚合，无需本机)',
+        'source': 'eastmoney-push2his (CI 原生聚合，真实比率跨运行累积)',
         'plates': plates,
+        'ratios': {p: {'sc': r['sc'], 'sd': r['sd'], 'sz': r['sz'], 'sx': r['sx'],
+                      'sample': r['sample']} for p, r in merged.items()},
     }
     os.makedirs('api', exist_ok=True)
     with open('api/plate_em.json', 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print("✅ 已写入 api/plate_em.json（%d 个板块真实拆分）" % len(plates))
+    print("✅ 已写入 api/plate_em.json（%d 板块真实拆分，其中 %d 为本次刷新）"
+          % (len(plates), fresh_n))
 
 
 def fetch_plate_data_tushare(token):
