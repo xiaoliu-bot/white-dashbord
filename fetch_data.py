@@ -10,7 +10,7 @@
   （板块资金流字段：net 主力/净额净流入，pct 涨跌幅，source 标记数据来源 Tushare / 行业 / 概念 / 板块涨跌）
 Tushare token 通过环境变量 TUSHARE_TOKEN 注入（建议配置为仓库 Secrets，勿硬编码）。
 """
-import json, time, os, datetime, socket, threading, random, math, urllib.request
+import json, time, os, re, datetime, socket, threading, random, math, urllib.request
 import warnings
 from urllib.parse import urlparse
 import ssl
@@ -461,7 +461,8 @@ def _em_fetch_boards(t, label):
                "&fs=m%%3A90%%2Bt%%3A%d"
                "&fields=f12%%2Cf14%%2Cf3%%2Cf62%%2Cf66%%2Cf72%%2Cf78%%2Cf84"
                % (pn, _EM_UT, t))
-        txt, ok = _http_get(url, timeout=15, retries=3, cache_ttl=120,
+        # 海外 runner 常被东财以 502 拒绝，单次尝试即可，不做昂贵重试
+        txt, ok = _http_get(url, timeout=8, retries=1, cache_ttl=120,
                             label="%s第%d页" % (label, pn))
         if not ok:
             break
@@ -500,6 +501,9 @@ def fetch_plate_data_eastmoney():
                                   45, [], src)
         if not rows:
             print("  · %s 无数据，跳过" % src)
+            if t == 2:
+                print("  · 东财 push2 不可达（GitHub 海外 runner 常被 502 拒绝），放弃东财、直接走兜底源")
+                break
             continue
         for r in rows:
             name = str(r.get('f14') or '').strip()
@@ -803,19 +807,39 @@ def _try_cols(row, names, default=0):
     return default
 
 def load_history(days=5):
-    """读取 api/history/ 下最近 days 天，构建 板块名->[每日主力] 列表（用于累计判断）"""
+    """读取 api/history/ 下最近 days 个日快照，构建 板块名->[每日主力]（用于持续性加成）。
+
+    ⚠️ 只认 YYYY-MM-DD.json。目录里还有 dates.json 这类索引文件，其 JSON 根是数组，
+       误当日快照读会抛 "'list' object has no attribute 'get'"；
+       且旧实现把 try 包在整个循环外，一个坏文件就会中断全部历史加载，
+       导致 5 日持续性加成长期静默失效。现改为白名单 + 逐文件容错。"""
     hm = {}
+    hist_dir = 'api/history'
+    if not os.path.isdir(hist_dir):
+        return hm
     try:
-        hist_dir = 'api/history'
-        if os.path.isdir(hist_dir):
-            files = sorted(f for f in os.listdir(hist_dir) if f.endswith('.json'))[-days:]
-            for f in files:
-                with open(os.path.join(hist_dir, f), encoding='utf-8') as fh:
-                    dat = json.load(fh)
-                for pf in dat.get('plateFlows', []):
-                    hm.setdefault(pf.get('name'), []).append({'主力': pf.get('主力', 0) or 0})
+        cand = [f for f in os.listdir(hist_dir)
+                if re.match(r'^\d{4}-\d{2}-\d{2}\.json$', f)]
+        files = sorted(cand)[-days:]
     except Exception as e:
-        print(f"  ⚠️ 历史累计跳过: {e}")
+        print(f"  ⚠️ 历史目录读取失败: {e}")
+        return hm
+    for f in files:
+        try:
+            with open(os.path.join(hist_dir, f), encoding='utf-8') as fh:
+                dat = json.load(fh)
+            if not isinstance(dat, dict):
+                continue
+            for pf in (dat.get('plateFlows') or []):
+                if not isinstance(pf, dict):
+                    continue
+                nm = pf.get('name')
+                if nm:
+                    hm.setdefault(nm, []).append({'主力': pf.get('主力', 0) or 0})
+        except Exception as e:
+            print(f"  ⚠️ 历史文件 {f} 跳过: {str(e)[:60]}")
+    if hm:
+        print(f"  · 历史累计: {len(files)} 个日快照 / {len(hm)} 个板块")
     return hm
 
 def classify_plate(plate, history=None, flow_max=None):
