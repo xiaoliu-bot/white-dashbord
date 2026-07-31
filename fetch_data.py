@@ -106,7 +106,7 @@ def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
         "User-Agent": random.choice(_UA_POOL),
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Connection": "keep-alive",
+        "Connection": "close",
         "Referer": _REFERERS.get(host, "https://www.google.com/"),
     }
     ctx = None if verify_ssl else ssl._create_unverified_context()
@@ -593,7 +593,7 @@ def fetch_plate_em_push2his(all_flows):
             continue
         sm = sc = sd = sz = sx = 0  # 主力/超大/大/中(大户)/小(散户) 累加
         got = 0
-        for code in stocks:
+        for code in stocks[:8]:   # 限制样本数，降低请求量/封禁概率
             r = _em_fflow_one(_secid(code))
             if r is None:
                 continue
