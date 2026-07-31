@@ -63,6 +63,7 @@ _REFERERS = {
     "www.cffex.com.cn": "http://www.cffex.com.cn/",
     "api.gold-api.com": "https://www.google.com/",
     "open.er-api.com": "https://www.google.com/",
+    "push2.eastmoney.com": "https://data.eastmoney.com/bkzj/hy.html",
 }
 # 各 host 最小请求间隔（秒）：新浪按元宝建议 ≥1~2s（取 2s + 随机抖动）
 _HOST_INTERVAL = {
@@ -71,6 +72,7 @@ _HOST_INTERVAL = {
     "www.cffex.com.cn": 1.0,
     "api.gold-api.com": 1.0,
     "open.er-api.com": 1.0,
+    "push2.eastmoney.com": 1.5,
 }
 
 def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
@@ -442,6 +444,91 @@ def _match_plate(result, name, net, inflow, outflow, pct, source):
                 }
                 return
 
+# === 东财 push2 板块资金流（主源，免 token / 免积分）===
+# 相比 Tushare(无权限恒空) 与 AKShare(依赖 pandas、接口易变)：
+#   ① 纯 HTTP + JSON，无第三方库依赖，快且稳定；
+#   ② 直接给出 主力/中单/小单 的真实分解，不必再按 55%/28% 估算。
+# 字段：f12 代码 | f14 名称 | f3 涨跌幅% | f62 主力净额 | f66 超大单 | f72 大单 | f78 中单 | f84 小单（均为元）
+_EM_UT = "b2884a393a59ad64002292a3e90d46a5"
+
+
+def _em_fetch_boards(t, label):
+    """拉东财板块资金流全量。t=2 行业板块，t=3 概念板块。返回 list[dict]，失败返回 []。"""
+    rows, pn = [], 1
+    while pn <= 4:
+        url = ("https://push2.eastmoney.com/api/qt/clist/get?"
+               "fid=f62&po=1&pz=200&pn=%d&np=1&fltt=2&invt=2&ut=%s"
+               "&fs=m%%3A90%%2Bt%%3A%d"
+               "&fields=f12%%2Cf14%%2Cf3%%2Cf62%%2Cf66%%2Cf72%%2Cf78%%2Cf84"
+               % (pn, _EM_UT, t))
+        txt, ok = _http_get(url, timeout=15, retries=3, cache_ttl=120,
+                            label="%s第%d页" % (label, pn))
+        if not ok:
+            break
+        try:
+            data = (json.loads(txt) or {}).get('data') or {}
+        except Exception as e:
+            print("  · %s 解析失败: %s" % (label, str(e)[:50]))
+            break
+        diff = data.get('diff') or []
+        if not diff:
+            break
+        rows.extend(diff)
+        if len(rows) >= int(data.get('total') or 0):
+            break
+        pn += 1
+    return rows
+
+
+def _em_num(row, key):
+    v = row.get(key)
+    if v in (None, '', '-'):
+        return 0
+    try:
+        return int(float(v))
+    except Exception:
+        return 0
+
+
+def fetch_plate_data_eastmoney():
+    """东财板块资金流（主源）。返回 {板块: {...}}。
+    ⚠️ net 口径 = f62 主力净流入净额（元）。不用「超大+大+中+小」的总净额——
+       该总和恒接近 0（买卖对等），做方向与气泡大小都没有参考价值。"""
+    out = {}
+    for t, src in ((2, '东财行业'), (3, '东财概念')):
+        rows = _call_with_timeout(lambda _t=t, _s=src: _em_fetch_boards(_t, _s),
+                                  45, [], src)
+        if not rows:
+            print("  · %s 无数据，跳过" % src)
+            continue
+        for r in rows:
+            name = str(r.get('f14') or '').strip()
+            if not name:
+                continue
+            for plate, keywords in PLATE_KEYWORDS.items():
+                if plate in out:
+                    continue
+                if not any(kw in name for kw in keywords):
+                    continue
+                zhu = _em_num(r, 'f62')      # 主力 = 超大单 + 大单
+                try:
+                    pct = round(float(r.get('f3') or 0), 2)
+                except Exception:
+                    pct = 0.0
+                out[plate] = {
+                    'name': plate, '行业名': name, 'code': str(r.get('f12') or ''),
+                    'net': zhu,
+                    'inflow': _em_num(r, 'f66'), 'outflow': _em_num(r, 'f72'),
+                    '超大单': _em_num(r, 'f66'), '大单': _em_num(r, 'f72'),
+                    '主力': zhu, '大户': _em_num(r, 'f78'), '散户': _em_num(r, 'f84'),
+                    'pct': pct, 'source': src,
+                }
+                break
+        print("  ✅ %s: %d 条，累计命中 %d/%d 个持仓板块"
+              % (src, len(rows), len(out), len(PLATE_KEYWORDS)))
+    return out
+
+
 def fetch_plate_data_tushare(token):
     """Tushare 优先：拉板块资金流（best-effort，限频/积分不足时返回 {} 交给 AKShare 兜底）。
     依次尝试：
@@ -517,9 +604,22 @@ def fetch_plate_data_tushare(token):
     return result
 
 def fetch_plate_data():
-    """板块资金流：Tushare 优先（fetch_plate_data_tushare），AKShare 仅补充未命中板块。"""
-    all_flows = fetch_plate_data_tushare(os.environ.get('TUSHARE_TOKEN'))  # Tushare 优先
-    print(f"  · Tushare 已命中板块: {list(all_flows.keys())}")
+    """板块资金流，按优先级降级：
+    1) 东财 push2（免 token，含主力/中单/小单真实分解）——主源；
+    2) Tushare（需积分权限，无权限时秒级跳过）；
+    3) AKShare 行业/概念资金流；
+    4) 东财板块涨跌（仅补 pct / 估算 net）。
+    东财已覆盖全部持仓板块时直接返回，跳过后面三次慢调用（每次 25s 超时），
+    可显著缩短 CI 时长并降低整条流水线的失败概率。"""
+    all_flows = fetch_plate_data_eastmoney()  # 主源：东财 push2
+    if len(all_flows) >= len(PLATE_KEYWORDS):
+        print("  · 东财已覆盖全部持仓板块，跳过 Tushare/AKShare 兜底")
+        return all_flows
+
+    _tus = fetch_plate_data_tushare(os.environ.get('TUSHARE_TOKEN'))
+    for _k, _v in (_tus or {}).items():
+        all_flows.setdefault(_k, _v)
+    print(f"  · Tushare 补充后命中: {list(all_flows.keys())}")
 
     df_ind = _call_with_timeout(lambda: ak.stock_fund_flow_industry(symbol="即时"), 25, None, "行业资金流")
     if df_ind is not None:
