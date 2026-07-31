@@ -2,8 +2,9 @@ name: Daily Market Data Fetch
 
 on:
   schedule:
-    # 每 5 分钟抓取一次（北京时间约 09:00–17:55，周一~周五；覆盖收盘后中金所持仓排名发布）
-    - cron: '*/5 1-9 * * 1-5'
+    # 多组 cron 提升命中概率（GitHub 调度常被合并/延迟，故配合下方「自触发续跑」链）
+    - cron: '3,23,43 1-8 * * 1-5'
+    - cron: '13,33,53 1-8 * * 1-5'
   workflow_dispatch:
   repository_dispatch:
     types: [fetch-data]
@@ -11,10 +12,15 @@ on:
 permissions:
   contents: write
 
+# 防止重叠运行：同组新运行排队，避免并发写 api/data.json 互相覆盖
+concurrency:
+  group: daily-fetch
+  cancel-in-progress: false
+
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,12 +34,17 @@ jobs:
       - name: Install dependencies
         run: pip install akshare tushare jqdatasdk -q
 
-      - name: Fetch data
+      - name: Fetch data (失败自动重试 x3)
         env:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           JQ_USER: ${{ secrets.JQ_USER }}
           JQ_PASSWORD: ${{ secrets.JQ_PASSWORD }}
-        run: python fetch_data.py
+        run: |
+          for i in 1 2 3; do
+            python fetch_data.py && break
+            echo "⚠️ 第 $i 次抓取失败，10s 后重试"
+            sleep 10
+          done
 
       - name: Configure git
         run: |
@@ -54,4 +65,26 @@ jobs:
             echo "✅ 推送成功"
           else
             echo "无变化，跳过推送"
+          fi
+
+      - name: Self-redispatch（交易时段每 15 分钟续跑）
+        # 弥补 GitHub 自带 cron 在盘中几乎不触发的问题：一旦被外部/手动/定时踢起，
+        # 在 09:00–16:55 北京时间内每 15 分钟自触发下一轮，保证盘中高频刷新。
+        if: success()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          H=$(TZ=Asia/Shanghai date +%H); M=$(TZ=Asia/Shanghai date +%M)
+          HHMM=$((10#$H * 60 + 10#$M))
+          DOW=$(TZ=Asia/Shanghai date +%u)
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 540 ] && [ "$HHMM" -le 1015 ]; then
+            echo "交易时段内，约 15 分钟后自触发下一轮"
+            sleep 885
+            curl -s -X POST \
+              -H "Authorization: Bearer $GH_PAT" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/xiaoliu-bot/white-dashbord/actions/workflows/317447721/dispatches" \
+              -d '{"event_type":"fetch-data"}'
+          else
+            echo "非交易时段，停止自触发"
           fi
