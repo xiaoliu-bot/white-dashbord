@@ -64,6 +64,7 @@ _REFERERS = {
     "api.gold-api.com": "https://www.google.com/",
     "open.er-api.com": "https://www.google.com/",
     "push2.eastmoney.com": "https://data.eastmoney.com/bkzj/hy.html",
+    "push2his.eastmoney.com": "https://data.eastmoney.com/bkzj/hy.html",
 }
 # 各 host 最小请求间隔（秒）：新浪按元宝建议 ≥1~2s（取 2s + 随机抖动）
 _HOST_INTERVAL = {
@@ -73,6 +74,7 @@ _HOST_INTERVAL = {
     "api.gold-api.com": 1.0,
     "open.er-api.com": 1.0,
     "push2.eastmoney.com": 1.5,
+    "push2his.eastmoney.com": 0.5,
 }
 
 def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
@@ -533,6 +535,110 @@ def fetch_plate_data_eastmoney():
     return out
 
 
+# === 板块真实主力/散户拆分：东财 push2his 个股五档聚合（CI 原生，海外可达）===
+# 背景：东财实时 push2 板块排行在 GitHub 海外 runner 常被 502 拒绝；但其「资金流历史服务」
+# push2his.eastmoney.com 在海外正常（已 probe 验证）。板块级 push2his 只服务个股 secid，
+# 故对每板块的代表成分股逐只拉五档(主力/超大单/大单/中单/小单)，求和后按 AKShare 板块净额
+# 缩放，得到真实「主力/大户(中单)/散户(小单)」拆分——既拿到真实形状，量级又与看板 net 一致。
+# 限速：复用 _http_get，已在 _HOST_INTERVAL 配置 0.5s + 0~1s 随机抖动，避免触发东财限频/封禁。
+# 成分股为人工精选的代表性标的（secid 稳定）；板块大调时维护 _PLATE_STOCKS 一次即可。
+
+# 板块名 -> 代表成分股 6 位代码（键必须与 PLATE_KEYWORDS 严格一致）
+_PLATE_STOCKS = {
+    '芯片':     ['688981','002371','603501','603986','300782','002049','600584','300661','688012','688126','300223','600460','603290','688396','600745'],
+    '半导体':   ['688981','002371','603501','603986','300782','688012','688126','600460','603290','688396','300604','688521','688008','688256','688041'],
+    '细分化工': ['600309','600426','002493','600346','600989','002648','002601','600486','002064','000830'],
+    '科创创业AI': ['688256','688041','603019','002230','601360','688111','002261','000977','000938','601138'],
+    '机器人':   ['300024','300124','002747','601689','002050','688017','002472','603728','603662','002896','003021'],
+    '新能源电池': ['300750','002594','300014','002074','300207','002709','603659','300450','002812','688567','002850'],
+    '锂矿':     ['002466','002460','000792','002240','002192','002756','002738','002497','300390','002176'],
+    'CPO':      ['300308','300502','300394','002281','300570','688498','603083','000988','301205','688205','300757','002902'],
+    'PCB':      ['002938','002463','002916','600183','300476','603228','002384','002436','002815','000823','603920'],
+    '创新药':   ['600276','603259','688235','688180','600196','300122','300759','300347','002821','000999','000963','002422'],
+}
+
+def _secid(code):
+    """6 位代码 -> 东财 secid（沪市 1.x，深市 0.x）。"""
+    return ('1.' if code[0] == '6' else '0.') + code
+
+def _em_fflow_one(secid):
+    """拉单只股票当日五档资金流。返回 (主力, 超大, 大, 中, 小) 元，失败返回 None。"""
+    url = ("https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?"
+           "lmt=1&klt=101&secid=%s"
+           "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56"
+           % secid)
+    txt, ok = _http_get(url, timeout=10, retries=2, cache_ttl=180,
+                        label="个股五档%s" % secid)
+    if not ok:
+        return None
+    try:
+        d = json.loads(txt) or {}
+        kl = (d.get('data') or {}).get('klines') or []
+        if not kl:
+            return None
+        parts = str(kl[0]).split(',')
+        # 顺序：日期, 主力, 超大, 大, 中, 小
+        vals = [int(float(x)) for x in parts[1:6]]
+        return tuple(vals)  # (主力, 超大, 大, 中, 小)
+    except Exception:
+        return None
+
+def fetch_plate_em_push2his(all_flows):
+    """对 AKShare 已命中的板块，用 push2his 个股五档聚合真实主力/散户拆分。
+    返回 {板块名: {主力,大户,散户,超大单,大单,source,样本数}}，仅含成功聚合的板块。"""
+    out = {}
+    for plate, info in (all_flows or {}).items():
+        stocks = _PLATE_STOCKS.get(plate)
+        if not stocks:
+            continue
+        sm = sc = sd = sz = sx = 0  # 主力/超大/大/中(大户)/小(散户) 累加
+        got = 0
+        for code in stocks:
+            r = _em_fflow_one(_secid(code))
+            if r is None:
+                continue
+            m, c, d, z, x = r
+            sm += m; sc += c; sd += d; sz += z; sx += x
+            got += 1
+        if got == 0:
+            print("  · %s: push2his 个股全失败，跳过真实拆分" % plate)
+            continue
+        ak_net = info.get('net') or 0  # 元（AKShare 板块净额）
+        raw_main = sm
+        if raw_main == 0:
+            print("  · %s: 个股主力汇总为 0，跳过真实拆分" % plate)
+            continue
+        # 按 AKShare 板块净额缩放：保证量级一致、方向正确（真实拆分形状保留）
+        scale = ak_net / raw_main
+        主力 = round(sm * scale)
+        大户 = round(sz * scale)   # 中单
+        散户 = round(sx * scale)   # 小单
+        out[plate] = {
+            '主力': 主力, '大户': 大户, '散户': 散户,
+            '超大单': round(sc * scale), '大单': round(sd * scale),
+            'source': 'eastmoney-push2his', '样本数': got,
+        }
+        print("  ✅ %s: 真实拆分(样本%d) 主力%.2f亿 大户%.2f亿 散户%.2f亿"
+              % (plate, got, 主力/1e8, 大户/1e8, 散户/1e8))
+    return out
+
+def write_plate_em(all_flows):
+    """生成 api/plate_em.json（结构与 index.html applyEastmoneyOverlay 期望一致：plates[板块名] 含 主力/大户/散户）。"""
+    plates = fetch_plate_em_push2his(all_flows)
+    if not plates:
+        print("  · 无板块拿到真实拆分，跳过写 plate_em.json")
+        return
+    payload = {
+        'updated': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'source': 'eastmoney-push2his (CI 原生聚合，无需本机)',
+        'plates': plates,
+    }
+    os.makedirs('api', exist_ok=True)
+    with open('api/plate_em.json', 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    print("✅ 已写入 api/plate_em.json（%d 个板块真实拆分）" % len(plates))
+
+
 def fetch_plate_data_tushare(token):
     """Tushare 优先：拉板块资金流（best-effort，限频/积分不足时返回 {} 交给 AKShare 兜底）。
     依次尝试：
@@ -966,6 +1072,7 @@ def main():
 
     print("[3/4] 板块资金流...")
     plate_data = fetch_plate_data()
+    write_plate_em(plate_data)  # 东财 push2his 个股聚合，写真实主力/散户拆分
     plateFlows = []
     history_map = load_history(5)   # 近5日累计主力，用于更稳的吸筹/出货判断
     PLATE_ORDER = ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',

@@ -57,11 +57,11 @@ jobs:
       - name: Commit and push
         run: |
           # 检查是否有变化（不依赖退出码，避免 set -e 问题）
-          CHANGES=$(git status --porcelain api/data.json api/history/)
+          CHANGES=$(git status --porcelain api/data.json api/history/ api/plate_em.json)
           if [ -n "$CHANGES" ]; then
             DATE=$(date '+%Y-%m-%d')
             TS=$(date '+%H:%M')
-            git add api/data.json api/history/
+            git add api/data.json api/history/ api/plate_em.json
             git commit -m "📊 数据快照 $DATE $TS"
             git push
             echo "✅ 推送成功"
