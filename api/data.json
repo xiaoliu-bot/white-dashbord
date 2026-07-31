@@ -1,6 +1,6 @@
 {
   "updated": "2026-07-31",
-  "time": "15:09:43",
+  "time": "15:32:42",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -10,9 +10,9 @@
     },
     "NDX": {
       "name": "纳指",
-      "price": 25177.46,
-      "chg": 55.28,
-      "pct": 0.22
+      "price": 25073.23,
+      "chg": -48.95,
+      "pct": -0.19
     },
     "HSTECH": {
       "name": "恒生科技",
@@ -34,10 +34,10 @@
     }
   },
   "gold": {
-    "usd": 4048.0,
-    "usd_pct": 0.08,
-    "cny": 880.53,
-    "cny_pct": 0.08,
+    "usd": 4041.9,
+    "usd_pct": -0.15,
+    "cny": 879.21,
+    "cny_pct": -0.15,
     "fx": 6.7657
   },
   "plateFlows": [
@@ -230,6 +230,6 @@
     "indices": false,
     "gold": false,
     "plateFlows": false,
-    "citic": true
+    "citic": false
   }
 }
