@@ -1,0 +1,8 @@
+# 本地密钥（东财抓取脚本用，勿提交）
+em_config.json
+.em_pat
+
+# 通用
+.workbuddy/
+__pycache__/
+*.pyc

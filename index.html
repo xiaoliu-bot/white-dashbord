@@ -252,7 +252,7 @@
   <div class="foot">
     <span>● 数据：每 5 分钟抓取并入库（api/history/日期/series.json），可回溯历史</span>
     <span>● 红=涨/净流入 · 绿=跌/净流出 · 金=黄金 · 蓝=中信期指</span>
-    <span class="note">* 指数/黄金来自腾讯与 Gold-API；板块资金流与中信期指来自 AKShare，仅供参考，不构成投资建议</span>
+    <span class="note">* 指数/黄金来自腾讯与 Gold-API；板块资金流主源东财（真实主力/散户拆分，中国 IP 抓取）兜底 AKShare，中信期指来自 AKShare，仅供参考，不构成投资建议</span>
   </div>
 
 </div>
@@ -260,7 +260,7 @@
 <script>
   /* ---------- 真实数据：market-monitor 仓库的 api/data.json（由 fetch_data.py 每 5 分钟抓取） ---------- */
   const DATA_URL = 'api/data.json';
-  const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/market-monitor/main/api/data.json';
+  const FALLBACK = 'https://raw.githubusercontent.com/xiaoliu-bot/white-dashbord/main/api/data.json';
   const HIST_BASE = 'api/history/';
   const $ = s => document.querySelector(s);
   const PREVIEW_STALE = new URLSearchParams(location.search).get('preview') === 'stale';
@@ -278,7 +278,7 @@
   let liveSeries = null;  // 今天的时序（实时模式下的图表数据源）
 
   async function loadData(){
-    let src = 'market-monitor';
+    let src = 'white-dashbord';
     try{
       const r = await fetch(DATA_URL, {cache:'no-store'});
       if(!r.ok) throw new Error('HTTP '+r.status);
@@ -294,6 +294,7 @@
       }
     }
     activeDate = DATA.updated || null;
+    await applyEastmoneyOverlay();   // 东财真实主力/散户拆分叠加（中国 IP 抓取）
     renderAll();
     refreshLiveIndices();   // 浏览器直连腾讯行情，指数脱离 CI 频率实时刷新
     const t = new Date();
@@ -303,6 +304,33 @@
       const s = await fetchSeries(activeDate);
       if(s){ liveSeries = s; if(isLive){ syncReplayUI(s); renderChart(s, s.length-1); } }
     }
+  }
+
+  /* ---------- 东财真实主力/散户拆分叠加 ---------- */
+  // api/plate_em.json 由中国 IP 定时抓取并推送（fetch_eastmoney_plates.py），
+  // 仅覆盖 主力/大户/散户/net/pct，signal 等仍由 CI 计算（net 量级一致）。
+  async function applyEastmoneyOverlay(){
+    if(!DATA || !DATA.plateFlows) return;
+    try{
+      const r = await fetch('api/plate_em.json?t=' + Date.now(), {cache:'no-store'});
+      if(!r.ok) return;
+      const em = await r.json();
+      const plates = (em && em.plates) || {};
+      const updated = em && em.updated;
+      let hits = 0;
+      DATA.plateFlows.forEach(p=>{
+        const o = plates[p.name];
+        if(!o) return;
+        if(o.net!=null)    p.net    = o.net;
+        if(o.主力!=null)   p.主力   = o.主力;
+        if(o.大户!=null)   p.大户   = o.大户;
+        if(o.散户!=null)   p.散户   = o.散户;
+        if(o.pct!=null)    p.pct    = o.pct;
+        p.emSource = 'eastmoney';
+        hits++;
+      });
+      if(hits) console.log('[东财叠加] 命中 '+hits+' 个板块 · 更新于 '+(updated||'?'));
+    }catch(e){ /* 叠加失败不影响主数据 */ }
   }
 
   function renderAll(){
