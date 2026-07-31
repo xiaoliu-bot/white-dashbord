@@ -5,6 +5,8 @@ on:
     # 多组 cron 提升命中概率（GitHub 调度常被合并/延迟，故配合下方「自触发续跑」链）
     - cron: '3,23,43 1-8 * * 1-5'
     - cron: '13,33,53 1-8 * * 1-5'
+    - cron: '0 9 * * 1-5'      # 17:00 北京，尾盘兜底锚点
+    - cron: '30 8 * * 1-5'     # 16:30 北京，收盘前兜底锚点
   workflow_dispatch:
   repository_dispatch:
     types: [fetch-data]
@@ -20,7 +22,7 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,7 +71,8 @@ jobs:
 
       - name: Self-redispatch（交易时段每 15 分钟续跑）
         # 弥补 GitHub 自带 cron 在盘中几乎不触发的问题：一旦被外部/手动/定时踢起，
-        # 在 09:00–16:55 北京时间内每 15 分钟自触发下一轮，保证盘中高频刷新。
+        # 在 08:00–20:00 北京时间内每 15 分钟自触发下一轮，保证盘中高频刷新；
+        # 窗口放宽到 20:00 以接住被 GitHub 延迟到盘后的「启动运行」，避免当天完全不刷新。
         if: success()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
@@ -77,8 +80,8 @@ jobs:
           H=$(TZ=Asia/Shanghai date +%H); M=$(TZ=Asia/Shanghai date +%M)
           HHMM=$((10#$H * 60 + 10#$M))
           DOW=$(TZ=Asia/Shanghai date +%u)
-          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 540 ] && [ "$HHMM" -le 1015 ]; then
-            echo "交易时段内，约 15 分钟后自触发下一轮"
+          if [ "$DOW" -le 5 ] && [ "$HHMM" -ge 480 ] && [ "$HHMM" -le 1200 ]; then
+            echo "交易时段内（含盘后兜底窗口），约 15 分钟后自触发下一轮"
             sleep 885
             curl -s -X POST \
               -H "Authorization: Bearer $GH_PAT" \
