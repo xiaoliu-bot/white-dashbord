@@ -336,32 +336,72 @@ def fetch_indices_jq(jq):
     return out
 
 # === 黄金 ===
-def fetch_usdcny():
-    """实时美元兑人民币（免费接口，走过统一的伪装+限频请求器，失败兜底 7.2）。"""
+def _usdcny_primary():
     txt, ok = _http_get("https://open.er-api.com/v6/latest/USD",
                         timeout=10, retries=3, cache_ttl=120, label="美元兑人民币")
     if not ok:
-        return 7.2
+        return 0.0
     try:
-        d = json.loads(txt)
-        rate = float(d['rates']['CNY'])
-        if 6.0 < rate < 8.0:   # 合理区间校验，避免脏数据
-            return rate
+        return float(json.loads(txt)['rates']['CNY'])
     except Exception:
-        pass
+        return 0.0
+
+def _usdcny_backup():
+    """备用源：jsDelivr 上的免费汇率 API（无需 key，CDN 稳定）。"""
+    txt, ok = _http_get("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/usd.json",
+                        timeout=10, retries=3, cache_ttl=300, label="美元兑人民币(备用)")
+    if not ok:
+        return 0.0
+    try:
+        return float(json.loads(txt)['usd']['cny'])
+    except Exception:
+        return 0.0
+
+def fetch_usdcny():
+    """实时美元兑人民币：主源 open.er-api → 备用 jsDelivr 汇率 API → 兜底 7.2。"""
+    for fn in (_usdcny_primary, _usdcny_backup):
+        try:
+            rate = fn()
+            if 6.0 < rate < 8.0:   # 合理区间校验，避免脏数据
+                return rate
+        except Exception:
+            pass
     return 7.2
 
 
+def fetch_gold_tencent():
+    """腾讯 hf_GC 兜底源（伦敦金/XAU 现货，USD/oz）。
+    v_hf_GC 形如 "4111.35,-1.18,4111.10,4111.50,...伦敦金"，逗号分隔，[0]=现价。"""
+    txt, ok = _http_get("https://qt.gtimg.cn/q=hf_GC",
+                        encoding='gbk', timeout=10, retries=2, cache_ttl=120, label="腾讯黄金")
+    if not ok:
+        return 0.0
+    import re
+    m = re.search(r'v_hf_GC="([^"]+)"', txt)
+    if not m:
+        return 0.0
+    parts = m.group(1).split(',')
+    try:
+        return float(parts[0])
+    except (ValueError, IndexError):
+        return 0.0
+
 def fetch_gold(prev_gold=None):
-    """国际金价(XAU/USD) + 实时汇率换算的国内金价；涨跌幅与上一次快照比较。"""
+    """国际金价(XAU/USD) + 实时汇率换算的国内金价；涨跌幅与上一次快照比较。
+    主源 gold-api.com → 兜底 腾讯 hf_GC。"""
+    price = 0.0
     txt, ok = _http_get("https://api.gold-api.com/price/XAU",
                         timeout=10, retries=3, cache_ttl=120, label="Gold-API")
-    d = json.loads(txt) if ok else None
-    if not d:
-        return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0, 'fx': 0}
-    try:
-        price = float(d['price'])
-    except (KeyError, TypeError, ValueError):
+    if ok:
+        try:
+            price = float(json.loads(txt)['price'])
+        except Exception:
+            price = 0.0
+    if not price:
+        price = fetch_gold_tencent()
+        if price:
+            print("  · 黄金改用腾讯兜底源")
+    if not price:
         return {'usd': 0, 'usd_pct': 0, 'cny': 0, 'cny_pct': 0, 'fx': 0}
     fx = fetch_usdcny()
     cny = round(price / 31.1035 * fx, 2)
@@ -582,7 +622,7 @@ def _fetch_cffex_csv_day(day):
     result = {}
     for sym, label in targets.items():
         url = f"http://www.cffex.com.cn/sj/ccpm/{ym}/{dd}/{sym}_1.csv"
-        raw, ok = _http_get(url, encoding='gb18030', timeout=12, retries=1,
+        raw, ok = _http_get(url, encoding='gb18030', timeout=12, retries=3,
                             cache_ttl=300, label=f"中信期指{sym}")
         if not ok:
             continue
@@ -768,10 +808,12 @@ def main():
 
     print("[1/4] 指数...")
     idxStale = False
-    indices = fetch_indices()
-    if not indices:
-        print("  · 腾讯指数失败，尝试新浪兜底")
-        indices = fetch_indices_sina()
+    indices = fetch_indices()                       # 主源：腾讯
+    sina = fetch_indices_sina() or {}              # 兜底源：新浪（补缺）
+    added = [k for k in sina if k not in indices]
+    indices.update({k: v for k, v in sina.items() if k not in indices})
+    if added:
+        print(f"  · 新浪补全指数: {added}")
     if not indices:
         indices = prev.get('indices', {})
         if indices:
@@ -844,10 +886,10 @@ def main():
             'reason': cls['reason'],
         })
     plateStale = False
-    if all(p.get('net', 0) == 0 for p in plateFlows) and prev.get('plateFlows'):
+    if (not plateFlows or all(p.get('net', 0) == 0 for p in plateFlows)) and prev.get('plateFlows'):
         plateFlows = prev['plateFlows']
         plateStale = True
-        print("  · 板块全为 0，沿用上次快照")
+        print("  · 板块资金流抓取失败/为空，沿用上次快照")
     print()
 
     print("[4/4] 中信期指多空...")
@@ -859,6 +901,11 @@ def main():
         print("  · 中信期指沿用上次快照")
     elif not citic:
         citic = _prev_citic
+
+    # 兜底：若四大模块全部缺失，整体沿用上次快照，避免写出全空数据导致页面空白
+    if not indices and not gold.get('usd') and not plateFlows and not citic:
+        print("  ⚠️ 本次抓取全模块失败，整体沿用上次快照")
+        return prev
 
     data = {
         'updated': today,
