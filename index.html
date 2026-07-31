@@ -180,7 +180,7 @@
     <div class="status">
       <span class="live"><span class="dot"></span>LIVE</span>
       <span class="clock mono" id="clock">加载中…</span>
-      <button id="reloadBtn" class="rbtn" onclick="loadData()">↻ 刷新</button>
+      <button id="reloadBtn" class="rbtn" onclick="loadData(); refreshLiveIndices();">↻ 刷新</button>
       <button id="refreshBtn" class="rbtn" onclick="manualFetch()" title="用你自己的 GitHub Token 触发 CI 重新抓取数据（Token 仅存本机浏览器）">⟳ 重新抓取</button>
       <span id="refreshTip" class="rtip"></span>
     </div>
@@ -190,7 +190,7 @@
   <section>
     <div class="sec-head">
       <div class="sec-title">大盘指数 · 中信期指多空</div>
-      <div class="sec-sub">上证 · 纳指 · 恒生科技（腾讯） · 中信期货股指期货多空（CFFEX）</div>
+      <div class="sec-sub">上证 · 沪深300 · 创业板 · 恒生科技（腾讯实时） · 中信期货股指期货多空（CFFEX）</div>
       <div class="replay">
         <label>回溯</label>
         <select id="histDate" onchange="onSelectDate()"></select>
@@ -295,6 +295,7 @@
     }
     activeDate = DATA.updated || null;
     renderAll();
+    refreshLiveIndices();   // 浏览器直连腾讯行情，指数脱离 CI 频率实时刷新
     const t = new Date();
     $('#clock').textContent = '数据更新于 ' + (DATA.updated||'—') + (DATA.time?(' '+DATA.time):'') + ' · 拉取于 ' + t.toTimeString().slice(0,8);
     // 拉取当天时序用于走势图
@@ -327,6 +328,43 @@
       box.appendChild(el);
     });
     if(!Object.keys(idx).length) box.innerHTML = '<div class="icard"><div class="iname">指数数据暂缺</div><div class="note" style="margin-top:8px">接口今日未返回，将随下次抓取恢复</div></div>';
+  }
+
+  /* ---------- 实时指数：浏览器直连腾讯行情（独立于 CI 频率） ---------- */
+  const TENCENT_Q = { '000001':'sh000001', '000300':'sh000300', '399006':'sz399006', 'HSTECH':'hkHSTECH', 'NDX':'usIXIC' };
+  function refreshLiveIndices(){
+    if(!DATA || !DATA.indices) return;
+    const pairs = [];
+    for(const k in DATA.indices){ const q = TENCENT_Q[k]; if(q) pairs.push([k,q]); }
+    if(!pairs.length) return;
+    const s = document.createElement('script');
+    s.src = 'https://qt.gtimg.cn/q=' + pairs.map(p=>p[1]).join(',');
+    s.charset = 'gbk';   // 腾讯返回 GBK，脚本按 GBK 解析避免中文串语法错误
+    s.onload = ()=>{
+      let ok = false;
+      for(const [k, q] of pairs){
+        const raw = window['v_'+q];   // 腾讯接口忽略 callback，直接暴露全局变量 v_xxx
+        if(!raw) continue;
+        const f = raw.split('~');
+        const price = parseFloat(f[3]);
+        const prev = parseFloat(f[4]) || price;
+        let pct = parseFloat(f[32]);
+        if(isNaN(pct) && prev) pct = (price - prev) / prev * 100;
+        if(isNaN(price)) continue;
+        const d = DATA.indices[k];
+        d.price = price;
+        d.pct = isNaN(pct) ? (d.pct||0) : +pct.toFixed(2);
+        ok = true;
+      }
+      if(ok && DATA.stale) DATA.stale.indices = false;   // 已有实时数据，去掉「未更新」标签
+      renderIndices();
+      const t = new Date();
+      $('#clock').textContent = '实时行情 ' + t.toTimeString().slice(0,8) + (DATA.updated ? (' · 数据快照 ' + DATA.updated) : '');
+      const tip = $('#refreshTip'); if(tip) tip.textContent = '';
+      s.remove();
+    };
+    s.onerror = ()=>{ s.remove(); };
+    document.body.appendChild(s);
   }
 
   /* ---------- 中信期货 股指期货多空单 ---------- */
@@ -603,7 +641,8 @@
   /* ---------- 启动：拉取真实数据，每 5 分钟刷新；载入可选历史日期 ---------- */
   loadData();
   loadDates();
-  setInterval(()=>{ if(isLive) loadData(); }, 300000);   // 每 5 分钟
+  setInterval(()=>{ if(isLive) loadData(); }, 300000);   // 每 5 分钟重读 data.json（板块/期指/黄金）
+  setInterval(()=>{ if(isLive) refreshLiveIndices(); }, 20000);   // 指数每 20 秒直连腾讯实时刷新（独立于 CI）
   window.addEventListener('resize', ()=>{
     if(DATA){
       const s = isLive ? liveSeries : (HIST[activeDate]);
