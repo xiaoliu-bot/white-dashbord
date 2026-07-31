@@ -537,11 +537,11 @@ def fetch_plate_data_eastmoney():
 
 # === 板块真实主力/散户拆分：东财 push2his 个股五档聚合（CI 原生，海外可达）===
 # 背景：东财实时 push2 板块排行在 GitHub 海外 runner 常被 502 拒绝；但其「资金流历史服务」
-# push2his.eastmoney.com 在海外正常（已 probe 验证）。板块级 push2his 只服务个股 secid，
-# 故对每板块的代表成分股逐只拉五档(主力/超大单/大单/中单/小单)，求和后按 AKShare 板块净额
-# 缩放，得到真实「主力/大户(中单)/散户(小单)」拆分——既拿到真实形状，量级又与看板 net 一致。
-# 限速：复用 _http_get，_HOST_INTERVAL 已放宽到 1.5s + 0~1s 随机抖动；真实比率跨运行累积，单轮被限频也能自愈。
-# 成分股为人工精选的代表性标的（secid 稳定）；板块大调时维护 _PLATE_STOCKS 一次即可。
+# 真实「主力/大户(中单)/散户(小单)」拆分来源（CI 原生，无需本机）：
+# 主源 = 东财板块资金流 clist（push2his.eastmoney.com/api/qt/clist/get，行业+概念），
+#   1~2 次请求即返回全部板块的主力/超大/大/中/小净额，远抗限频；按 AKShare 板块净额缩放保量级一致。
+# 兜底 = 逐股五档聚合（_em_fflow_one，东财对海外 CI 限频严重、常全失败，仅作 clist 漏命中时的补充）。
+# 真实比率跨运行累积（api/plate_em.json 的 ratios 缓存），单轮被限频也能自愈；全失败时前端回退 AKShare 估计。
 
 # 板块名 -> 代表成分股 6 位代码（键必须与 PLATE_KEYWORDS 严格一致）
 _PLATE_STOCKS = {
@@ -583,42 +583,74 @@ def _em_fflow_one(secid):
     except Exception:
         return None
 
+def _clist_em_boards():
+    """一次性拉东财行业+概念板块资金流（主力/超大/大/中/小净额），返回 {板块名:{sc,sd,sz,sx}}。
+    仅 1~2 次请求即可覆盖全部持仓板块，远比逐股聚合(150次)抗限频。
+    失败（字段缺失/被墙）返回 {}。"""
+    out = {}
+    for fs, kind in [('m:90+t:2', '行业'), ('m:90+t:3', '概念')]:
+        url = ("https://push2his.eastmoney.com/api/qt/clist/get?"
+               "pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fs=%s"
+               "&fields=f12,f14,f62,f66,f72,f78,f84" % fs)
+        txt, ok = _http_get(url, timeout=15, retries=2, cache_ttl=120,
+                            label="板块资金流%s" % kind)
+        if not ok:
+            print("  · 东财板块资金流(%s) 拉取失败" % kind)
+            continue
+        try:
+            d = json.loads(txt) or {}
+            for it in (d.get('data') or {}).get('diff') or []:
+                name = it.get('f14')
+                m = it.get('f62') or 0  # 主力净额
+                if not name or m == 0:
+                    continue
+                c = it.get('f66') or 0   # 超大单净额
+                sd = it.get('f72') or 0  # 大单净额
+                z = it.get('f78') or 0   # 中单净额(大户)
+                x = it.get('f84') or 0   # 小单净额(散户)
+                out[name] = {'sc': c / m, 'sd': sd / m, 'sz': z / m, 'sx': x / m}
+        except Exception as e:
+            print("  · 东财板块资金流(%s) 解析失败: %s" % (kind, e))
+    return out
+
 def _accumulate_plate_ratios(all_flows, cached):
-    """逐板块尝试用 push2his 个股五档刷新真实「主力/大户/散户」比率；
-    成功则覆盖缓存，失败则沿用上一轮缓存（比率日内稳定，跨运行累积自愈）。
-    返回 (merged, fresh_n)：merged={板块名:{sc,sd,sz,sx,sample,fresh}}，
-    其中 sc/sd/sz/sx 为相对主力(=1)的份额（sc+sd=1 即超大+大，sz+sx=-1 即中+小）。"""
+    """优先用东财板块资金流 clist（1~2 次请求拿全部板块真实比率）；
+    clist 未命中的板块回退到逐股聚合（仍失败则沿用缓存，最终前端回退 AKShare 估计）。
+    返回 (merged, fresh_n)。"""
+    clist = _clist_em_boards()
+    hit = [p for p in (all_flows or {}) if p in clist]
+    print("  · 东财板块资金流 clist 命中 %d/%d 个持仓板块" % (len(hit), len(all_flows or {})))
     merged = {}
     fresh_n = 0
     for plate, info in (all_flows or {}).items():
+        if plate in clist:
+            r = clist[plate]
+            merged[plate] = {'sc': r['sc'], 'sd': r['sd'], 'sz': r['sz'], 'sx': r['sx'], 'fresh': True}
+            fresh_n += 1
+            continue
+        # clist 未命中：尝试逐股聚合（东财对海外 CI 限频严重，多失败）
         stocks = _PLATE_STOCKS.get(plate)
         if not stocks:
             if plate in cached:
                 merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
             continue
-        sm = sc = sd = sz = sx = 0  # 主力/超大/大/中(大户)/小(散户) 累加
+        sm = sc = sd = sz = sx = 0
         got = 0
-        for code in stocks[:6]:     # 6 只代表股：足够刻画真实形状，压低请求量/封禁概率
-            r = _em_fflow_one(_secid(code))
-            if r is None:
+        for code in stocks[:6]:
+            rr = _em_fflow_one(_secid(code))
+            if rr is None:
                 continue
-            m, c, d, z, x = r
+            m, c, d, z, x = rr
             sm += m; sc += c; sd += d; sz += z; sx += x
             got += 1
         if got >= 2 and abs(sm) > 0:
-            merged[plate] = {
-                'sc': sc / sm, 'sd': sd / sm,
-                'sz': sz / sm, 'sx': sx / sm,
-                'sample': got, 'fresh': True,
-            }
+            merged[plate] = {'sc': sc / sm, 'sd': sd / sm, 'sz': sz / sm, 'sx': sx / sm, 'fresh': True}
             fresh_n += 1
-            print("  ✅ %s: 真实比率刷新(样本%d) 主力100%% 大户%.0f%% 散户%.0f%%"
-                  % (plate, got, sz / sm * 100, sx / sm * 100))
         elif plate in cached:
             merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
-            print("  · %s: 本轮个股拉取失败，沿用上次真实比率" % plate)
+            print("  · %s: clist 未命中且个股拉取失败，沿用上次真实比率" % plate)
         else:
-            print("  · %s: push2his 个股全失败且无缓存，跳过" % plate)
+            print("  · %s: clist 未命中、个股全失败且无缓存，跳过" % plate)
     return merged, fresh_n
 
 def write_plate_em(all_flows):
