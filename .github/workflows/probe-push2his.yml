@@ -1,0 +1,19 @@
+name: probe-push2his
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe push2his individual 5-tier fflow
+        run: |
+          echo "=== [A] push2his individual fflow (secid=1.600519 贵州茅台) ==="
+          curl -s --max-time 25 "https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?lmt=1&klt=101&secid=1.600519&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56" | head -c 500
+          echo ""
+          echo "=== [B] push2his board clist (industry, 5-tier fields) ==="
+          curl -s --max-time 25 "https://push2his.eastmoney.com/api/qt/clist/get?pn=1&pz=10&po=1&np=1&fltt=2&invt=2&fid=f62&fs=m:90+t:2&fields=f12,f14,f62,f66,f72,f78,f84" | head -c 500
+          echo ""
+          echo "=== [C] push2 live (expect blocked/empty, sanity) ==="
+          curl -s --max-time 25 "https://push2.eastmoney.com/api/qt/stock/get?secid=1.600519&fields=f43" | head -c 200
+          echo ""
+          echo "=== PROBE DONE ==="
