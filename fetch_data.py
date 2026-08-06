@@ -432,17 +432,20 @@ PLATE_KEYWORDS = {
 # 讨论度（人气榜聚合）用的「板块 → 东财成分板块」映射。
 # 取真实个股人气榜(stock_hot_rank_em) top-N，再按各板块成分股求交集，得板块讨论度。
 # 板块边界本就是自定义近似（与 PLATE_KEYWORDS 一致），这里用最接近的东财行业/概念板块做代理。
+# 每个观察板块 → 候选东财板块列表（按优先级）。先精确匹配，再包含匹配；
+# 某候选在东财不存在时自动跳过，试用下一个，避免「板块名不存在 → 整块无数据」。
+# industry=行业板块，concept=概念板块。
 SECTOR_BOARDS = {
-    '芯片':       ('industry', '芯片'),
-    '半导体':     ('industry', '半导体'),
-    '细分化工':   ('industry', '化学制品'),
-    '科创创业AI': ('concept',  '人工智能'),
-    '机器人':     ('industry', '机器人'),
-    '新能源电池': ('industry', '电池'),
-    '锂矿':       ('industry', '锂'),
-    'CPO':        ('concept',  'CPO'),
-    'PCB':        ('concept',  'PCB'),
-    '创新药':     ('concept',  '创新药'),
+    '芯片':       [('concept', '芯片'),     ('industry', '半导体')],
+    '半导体':     [('industry', '半导体')],
+    '细分化工':   [('industry', '化学制品'), ('industry', '化学原料')],
+    '科创创业AI': [('concept', '人工智能'),  ('concept', 'AI眼镜')],
+    '机器人':     [('industry', '机器人')],
+    '新能源电池': [('industry', '电池')],
+    '锂矿':       [('industry', '能源金属'), ('concept', '锂矿'), ('concept', '盐湖提锂')],
+    'CPO':        [('concept', 'CPO')],
+    'PCB':        [('concept', 'PCB')],
+    '创新药':     [('concept', '创新药')],
 }
 
 def _match_plate(result, name, net, inflow, outflow, pct, source):
@@ -594,6 +597,14 @@ def write_plate_em(all_flows):
 # 讨论度 = 市场对某板块「讨论/关注度」的真实代理。东财人气榜(stock_hot_rank_em)是 A股最权威的
 # 人气/讨论度排名，走 AKShare→东财、海外 CI 可达。把 top-N 个股人气按各板块成分股求交集，
 # 即得「板块内有多少热门股 + 名次加权」的真实讨论度。任一环节失败 → 整块返回 None，绝不回填假数。
+def _norm_code(code):
+    """把任意格式的代码（SH600000 / SZ000001 / 600000 / BK0735）规整成 6 位纯数字。失败返回 ''。"""
+    s = re.sub(r'\D', '', str(code))
+    return s[-6:] if len(s) >= 6 else ''
+
+_BOARD_CACHE = {}   # btype -> [(板块名称, 板块代码), ...]
+_DISC_DEBUG = {}    # 最近一次讨论度抓取的诊断信息（写入 api/data.json 便于排错）
+
 def _pick_col(df, candidates):
     """在 DataFrame 列中按候选名（精确 / 包含）挑一个存在的列名。"""
     if df is None or len(df.columns) == 0:
@@ -608,20 +619,56 @@ def _pick_col(df, candidates):
                 return col
     return None
 
-def _get_constituents(btype, bname):
-    """取某东财行业/概念板块的成分股代码（6 位，零填充），失败返回 []。"""
+def _board_name_list(btype):
+    """取东财行业/概念板块名称列表（缓存一次），返回 [(name, code), ...]；失败返回 []。"""
+    if btype in _BOARD_CACHE:
+        return _BOARD_CACHE[btype]
     try:
-        if btype == 'industry':
-            fn = lambda: ak.stock_board_industry_cons_em(symbol=bname)
-        else:
-            fn = lambda: ak.stock_board_concept_cons_em(symbol=bname)
+        fn = ak.stock_board_industry_name_em if btype == 'industry' else ak.stock_board_concept_name_em
+        df = _call_with_timeout(fn, 25, None, f"{btype}板块列表")
+        if df is None or len(df) == 0:
+            _BOARD_CACHE[btype] = []; return []
+        nm = _pick_col(df, ['板块名称', '名称', 'name'])
+        cd = _pick_col(df, ['板块代码', '代码', 'code'])
+        if not nm or not cd:
+            _BOARD_CACHE[btype] = []; return []
+        _BOARD_CACHE[btype] = [(str(r[nm]).strip(), str(r[cd]).strip()) for _, r in df.iterrows()]
+        return _BOARD_CACHE[btype]
+    except Exception as e:
+        print(f"  · 取{btype}板块列表异常: {str(e)[:80]}")
+        _BOARD_CACHE[btype] = []; return []
+
+def _resolve_board(cands):
+    """按候选 (btype, bname) 列表解析出 (em_code, btype, matched_name)。精确优先，其次包含匹配。
+    都不中返回 (None, None, None)。"""
+    for btype, bname in cands:           # 第一遍：精确匹配
+        lst = _board_name_list(btype)
+        if not lst:
+            continue
+        m = {n: c for n, c in lst}
+        if bname in m:
+            return (m[bname], btype, bname)
+    for btype, bname in cands:           # 第二遍：包含匹配
+        lst = _board_name_list(btype)
+        if not lst:
+            continue
+        for n, c in lst:
+            if bname and (bname in n or n in bname):
+                return (c, btype, n)
+    return (None, None, None)
+
+def _get_constituents(btype, bname):
+    """取某东财行业/概念板块的成分股（6 位纯数字），失败返回 []。bname 可为板块名或 BK 代码。"""
+    try:
+        fn = (lambda: ak.stock_board_industry_cons_em(symbol=bname)) if btype == 'industry' \
+            else (lambda: ak.stock_board_concept_cons_em(symbol=bname))
         df = _call_with_timeout(fn, 25, None, f"{bname}成分")
         if df is None or len(df) == 0:
             return []
         code_col = _pick_col(df, ['代码', '股票代码', 'code'])
         if not code_col:
             return []
-        return [str(c).strip().zfill(6) for c in df[code_col].tolist()]
+        return [c for c in (_norm_code(x) for x in df[code_col].tolist()) if c]
     except Exception as e:
         print(f"  · 取 {bname} 成分股异常: {str(e)[:80]}")
         return []
@@ -629,6 +676,8 @@ def _get_constituents(btype, bname):
 def fetch_discussion():
     """真实板块讨论度：东财个股人气榜 top-N → 聚合到 10 个观察板块。
     返回 {板块: {'score':int, 'count':int, 'hotStocks':[{name,rank}], 'source':str}} 或 None。"""
+    global _DISC_DEBUG
+    _DISC_DEBUG = {'hotCols': [], 'hotCount': 0, 'hotSampleCodes': [], 'plates': {}}
     if ak is None:
         print("  · AKShare 不可用，跳过讨论度")
         return None
@@ -637,17 +686,19 @@ def fetch_discussion():
         if df is None or len(df) == 0:
             print("  · 人气榜为空，跳过讨论度")
             return None
+        _DISC_DEBUG['hotCols'] = list(df.columns)
+        _DISC_DEBUG['hotCount'] = int(len(df))
         code_col = _pick_col(df, ['代码', '股票代码', 'code'])
         name_col = _pick_col(df, ['名称', '股票名称', 'name'])
-        rank_col = _pick_col(df, ['排名', 'rank', '序号'])
+        rank_col = _pick_col(df, ['排名', 'rank', '序号', '当前排名'])
         if not code_col or not name_col:
             print("  · 人气榜列解析失败，列为: %s" % list(df.columns))
             return None
-        # 取 top 300 人气个股，构建 代码 -> (名次, 名称)
+        # 取 top 300 人气个股，构建 6位代码 -> (名次, 名称)（规整掉 SH/SZ 前缀）
         top = df.head(300)
         hot_map = {}
         for _, r in top.iterrows():
-            code = str(r.get(code_col, '')).strip().zfill(6)
+            code = _norm_code(r.get(code_col, ''))
             name = str(r.get(name_col, '')).strip()
             try:
                 rank = int(float(r.get(rank_col, 0) or 0)) if rank_col else 0
@@ -655,18 +706,26 @@ def fetch_discussion():
                 rank = 0
             if code:
                 hot_map[code] = (rank, name)
+        _DISC_DEBUG['hotSampleCodes'] = list(hot_map.keys())[:5]
         print(f"  · 人气榜 top{len(hot_map)} 已获取（真实讨论度代理）")
 
         discussion = {}
-        for plate, (btype, bname) in SECTOR_BOARDS.items():
-            cons = _get_constituents(btype, bname)
-            if not cons:
-                discussion[plate] = {'score': 0, 'count': 0,
-                                     'hotStocks': [], 'source': '人气榜(无成分)'}
+        for plate, cands in SECTOR_BOARDS.items():
+            em_code, btype, matched = _resolve_board(cands)
+            if not em_code:
+                discussion[plate] = {'score': 0, 'count': 0, 'hotStocks': [],
+                                     'source': '人气榜(无匹配板块)'}
+                _DISC_DEBUG['plates'][plate] = {'resolved': None, 'note': '板块名未匹配东财列表'}
                 continue
-            hits = [(rk, nm) for c in cons if c in hot_map
-                    for (rk, nm) in [hot_map[c]]]
-            # 讨论度分数：板块内进入人气榜的个股数 + 名次加权（名次越靠前权重越高）
+            cons = _get_constituents(btype, em_code)
+            _DISC_DEBUG['plates'][plate] = {'resolved': em_code, 'matched': matched,
+                                            'btype': btype, 'consCount': len(cons)}
+            if not cons:
+                discussion[plate] = {'score': 0, 'count': 0, 'hotStocks': [],
+                                     'source': '人气榜(无成分)'}
+                continue
+            # 成分股（6位）与人气榜（6位）求交集，得板块内热门股
+            hits = [(rk, nm) for c in cons if c in hot_map for (rk, nm) in [hot_map[c]]]
             score = sum(max(0, 300 - rk + 1) for (rk, _) in hits)
             top3 = sorted(hits, key=lambda x: x[0])[:3]
             discussion[plate] = {
@@ -1200,6 +1259,7 @@ def main():
         'plateFlows': plateFlows,
         'citic': citic,
         'discussion': discussion,   # 真实讨论度（东财人气榜聚合），失败时为 None
+        'discussionDebug': _DISC_DEBUG,   # 排错用：人气榜列/样本代码 + 各板块解析结果
         'stale': {'indices': idxStale, 'gold': goldStale,
                   'plateFlows': plateStale, 'citic': citicStale,
                   'discussion': discussion is None},
