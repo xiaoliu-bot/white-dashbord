@@ -1,3 +1,4 @@
+# .mailmap — contributor attribution coalescing
 # 将早期本地提交误用的 liuze 署名合并到实际推送账号 xiaoliu-bot
 # GitHub 会据此在 Contributors 图与提交显示中把 liuze 的提交归并到 xiaoliu-bot
 xiaoliu-bot <305895863+xiaoliu-bot@users.noreply.github.com> liuze <liuze@users.noreply.github.com>
