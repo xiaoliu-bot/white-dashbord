@@ -64,7 +64,6 @@ _REFERERS = {
     "api.gold-api.com": "https://www.google.com/",
     "open.er-api.com": "https://www.google.com/",
     "push2.eastmoney.com": "https://data.eastmoney.com/bkzj/hy.html",
-    "push2his.eastmoney.com": "https://data.eastmoney.com/bkzj/hy.html",
 }
 # 各 host 最小请求间隔（秒）：新浪按元宝建议 ≥1~2s（取 2s + 随机抖动）
 _HOST_INTERVAL = {
@@ -74,7 +73,6 @@ _HOST_INTERVAL = {
     "api.gold-api.com": 1.0,
     "open.er-api.com": 1.0,
     "push2.eastmoney.com": 1.5,
-    "push2his.eastmoney.com": 1.5,
 }
 
 def _http_get(url, encoding='utf-8', timeout=15, retries=3, cache_ttl=None,
@@ -431,6 +429,22 @@ PLATE_KEYWORDS = {
     '创新药':   ['创新药', '生物药', '化学制药', '医疗器械'],
 }
 
+# 讨论度（人气榜聚合）用的「板块 → 东财成分板块」映射。
+# 取真实个股人气榜(stock_hot_rank_em) top-N，再按各板块成分股求交集，得板块讨论度。
+# 板块边界本就是自定义近似（与 PLATE_KEYWORDS 一致），这里用最接近的东财行业/概念板块做代理。
+SECTOR_BOARDS = {
+    '芯片':       ('industry', '芯片'),
+    '半导体':     ('industry', '半导体'),
+    '细分化工':   ('industry', '化学制品'),
+    '科创创业AI': ('concept',  '人工智能'),
+    '机器人':     ('industry', '机器人'),
+    '新能源电池': ('industry', '电池'),
+    '锂矿':       ('industry', '锂'),
+    'CPO':        ('concept',  'CPO'),
+    'PCB':        ('concept',  'PCB'),
+    '创新药':     ('concept',  '创新药'),
+}
+
 def _match_plate(result, name, net, inflow, outflow, pct, source):
     """按 PLATE_KEYWORDS 把东财/Tushare 行业名映射到持仓板块，命中且未存在的写入 result。"""
     for plate, keywords in PLATE_KEYWORDS.items():
@@ -535,174 +549,137 @@ def fetch_plate_data_eastmoney():
     return out
 
 
-# === 板块真实主力/散户拆分：东财 push2his 个股五档聚合（CI 原生，海外可达）===
-# 背景：东财实时 push2 板块排行在 GitHub 海外 runner 常被 502 拒绝；但其「资金流历史服务」
-# 真实「主力/大户(中单)/散户(小单)」拆分来源（CI 原生，无需本机）：
-# 主源 = 东财板块资金流 clist（push2his.eastmoney.com/api/qt/clist/get，行业+概念），
-#   1~2 次请求即返回全部板块的主力/超大/大/中/小净额，远抗限频；按 AKShare 板块净额缩放保量级一致。
-# 兜底 = 逐股五档聚合（_em_fflow_one，东财对海外 CI 限频严重、常全失败，仅作 clist 漏命中时的补充）。
-# 真实比率跨运行累积（api/plate_em.json 的 ratios 缓存），单轮被限频也能自愈；全失败时前端回退 AKShare 估计。
-
-# 板块名 -> 代表成分股 6 位代码（键必须与 PLATE_KEYWORDS 严格一致）
-_PLATE_STOCKS = {
-    '芯片':     ['688981','002371','603501','603986','300782','002049','600584','300661','688012','688126','300223','600460','603290','688396','600745'],
-    '半导体':   ['688981','002371','603501','603986','300782','688012','688126','600460','603290','688396','300604','688521','688008','688256','688041'],
-    '细分化工': ['600309','600426','002493','600346','600989','002648','002601','600486','002064','000830'],
-    '科创创业AI': ['688256','688041','603019','002230','601360','688111','002261','000977','000938','601138'],
-    '机器人':   ['300024','300124','002747','601689','002050','688017','002472','603728','603662','002896','003021'],
-    '新能源电池': ['300750','002594','300014','002074','300207','002709','603659','300450','002812','688567','002850'],
-    '锂矿':     ['002466','002460','000792','002240','002192','002756','002738','002497','300390','002176'],
-    'CPO':      ['300308','300502','300394','002281','300570','688498','603083','000988','301205','688205','300757','002902'],
-    'PCB':      ['002938','002463','002916','600183','300476','603228','002384','002436','002815','000823','603920'],
-    '创新药':   ['600276','603259','688235','688180','600196','300122','300759','300347','002821','000999','000963','002422'],
-}
-
-def _secid(code):
-    """6 位代码 -> 东财 secid（沪市 1.x，深市 0.x）。"""
-    return ('1.' if code[0] == '6' else '0.') + code
-
-def _em_fflow_one(secid):
-    """拉单只股票当日五档资金流。返回 (主力, 超大, 大, 中, 小) 元，失败返回 None。"""
-    url = ("https://push2his.eastmoney.com/api/qt/stock/fflow/kline/get?"
-           "lmt=1&klt=101&secid=%s"
-           "&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56"
-           % secid)
-    txt, ok = _http_get(url, timeout=10, retries=3, cache_ttl=180,
-                        label="个股五档%s" % secid)
-    if not ok:
-        return None
-    try:
-        d = json.loads(txt) or {}
-        kl = (d.get('data') or {}).get('klines') or []
-        if not kl:
-            return None
-        parts = str(kl[0]).split(',')
-        # 顺序：日期, 主力, 超大, 大, 中, 小
-        vals = [int(float(x)) for x in parts[1:6]]
-        return tuple(vals)  # (主力, 超大, 大, 中, 小)
-    except Exception:
-        return None
-
-def _clist_em_boards():
-    """一次性拉东财行业+概念板块资金流（主力/超大/大/中/小净额），返回 {板块名:{sc,sd,sz,sx}}。
-    仅 1~2 次请求即可覆盖全部持仓板块，远比逐股聚合(150次)抗限频。
-    失败（字段缺失/被墙）返回 {}。"""
-    out = {}
-    for fs, kind in [('m:90+t:2', '行业'), ('m:90+t:3', '概念')]:
-        url = ("https://push2his.eastmoney.com/api/qt/clist/get?"
-               "pn=1&pz=500&po=1&np=1&fltt=2&invt=2&fs=%s"
-               "&fields=f12,f14,f62,f66,f72,f78,f84" % fs)
-        txt, ok = _http_get(url, timeout=15, retries=2, cache_ttl=120,
-                            label="板块资金流%s" % kind)
-        if not ok:
-            print("  · 东财板块资金流(%s) 拉取失败" % kind)
-            continue
-        try:
-            d = json.loads(txt) or {}
-            for it in (d.get('data') or {}).get('diff') or []:
-                name = it.get('f14')
-                m = it.get('f62') or 0  # 主力净额
-                if not name or m == 0:
-                    continue
-                c = it.get('f66') or 0   # 超大单净额
-                sd = it.get('f72') or 0  # 大单净额
-                z = it.get('f78') or 0   # 中单净额(大户)
-                x = it.get('f84') or 0   # 小单净额(散户)
-                out[name] = {'sc': c / m, 'sd': sd / m, 'sz': z / m, 'sx': x / m}
-        except Exception as e:
-            print("  · 东财板块资金流(%s) 解析失败: %s" % (kind, e))
-    return out
-
-def _accumulate_plate_ratios(all_flows, cached):
-    """优先用东财板块资金流 clist（1~2 次请求拿全部板块真实比率）；
-    clist 未命中的板块回退到逐股聚合（仍失败则沿用缓存，最终前端回退 AKShare 估计）。
-    返回 (merged, fresh_n)。"""
-    clist = _clist_em_boards()
-    hit = [p for p in (all_flows or {}) if p in clist]
-    print("  · 东财板块资金流 clist 命中 %d/%d 个持仓板块" % (len(hit), len(all_flows or {})))
-    merged = {}
-    fresh_n = 0
-    for plate, info in (all_flows or {}).items():
-        if plate in clist:
-            r = clist[plate]
-            merged[plate] = {'sc': r['sc'], 'sd': r['sd'], 'sz': r['sz'], 'sx': r['sx'], 'fresh': True}
-            fresh_n += 1
-            continue
-        # clist 未命中：尝试逐股聚合（东财对海外 CI 限频严重，多失败）
-        stocks = _PLATE_STOCKS.get(plate)
-        if not stocks:
-            if plate in cached:
-                merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
-            continue
-        sm = sc = sd = sz = sx = 0
-        got = 0
-        for code in stocks[:6]:
-            rr = _em_fflow_one(_secid(code))
-            if rr is None:
-                continue
-            m, c, d, z, x = rr
-            sm += m; sc += c; sd += d; sz += z; sx += x
-            got += 1
-        if got >= 2 and abs(sm) > 0:
-            merged[plate] = {'sc': sc / sm, 'sd': sd / sm, 'sz': sz / sm, 'sx': sx / sm, 'fresh': True}
-            fresh_n += 1
-        elif plate in cached:
-            merged[plate] = dict(cached[plate]); merged[plate]['fresh'] = False
-            print("  · %s: clist 未命中且个股拉取失败，沿用上次真实比率" % plate)
-        else:
-            print("  · %s: clist 未命中、个股全失败且无缓存，跳过" % plate)
-    return merged, fresh_n
+# === 板块真实主力/散户拆分：直接复用 fetch_plate_data 已抓取的 主力/大户/散户 ===
+# fetch_plate_data_eastmoney（主源，东财 push2 板块排行）已逐板块返回
+#   f62 主力 / f78 大户(中单) / f84 散户(小单)（单位：元），覆盖绝大多数持仓板块；
+# AKShare 兜底源（stock_fund_flow_industry/concept）亦含「今日主力/中单/小单净流入-净额」列。
+# 两者皆在海外 CI 可达、且已在流水线中抓取，故【无需任何额外东财请求】即可拿到真实拆分——
+# 此前 push2his 逐股聚合/板块 clist 纯属多此一举（且海外被墙），现已彻底移除。
 
 def write_plate_em(all_flows):
     """生成 api/plate_em.json（结构与 index.html applyEastmoneyOverlay 期望一致）。
-
-    关键改进——真实比率跨运行累积：本轮成功的板块刷新比率，失败的沿用上一轮缓存，
-    故即便东财对海外 CI 限频（单轮仅 1~2 板块成功），数轮之后 10 板块全部拿到真实拆分。
-    plates 为本轮可落盘的板块（主力=AKShare 净额，大户/散户=真实比率缩放）；
-    ratios 为全量比率缓存（含未在本轮落盘者），供下一轮续算。"""
-    cached = {}
-    if os.path.exists('api/plate_em.json'):
-        try:
-            old = json.load(open('api/plate_em.json', encoding='utf-8'))
-            cached = old.get('ratios', {}) or {}
-        except Exception:
-            cached = {}
-    merged, fresh_n = _accumulate_plate_ratios(all_flows, cached)
-    if not merged:
-        print("  · 无板块拿到真实拆分（且无缓存），跳过写 plate_em.json")
-        return
+    直接采用 all_flows 中已有的 主力/大户/散户（东财 push2 主源优先，AKShare 兜底补充），
+    无需二次请求。未携带真实拆分的板块（极少见）不写出，前端自动回退 AKShare 估计。"""
     plates = {}
-    for plate, r in merged.items():
-        ak_net = (all_flows.get(plate) or {}).get('net') or 0  # 元（AKShare 板块净额）
-        if ak_net == 0:
+    for plate, info in (all_flows or {}).items():
+        zhu = info.get('主力')
+        da = info.get('大户')
+        san = info.get('散户')
+        if zhu is None or da is None or san is None:
+            continue  # 该板块未抓到真实拆分，交由前端 AKShare 估计兜底
+        if zhu == 0 and da == 0 and san == 0:
             continue
-        sc_s, sd_s, sz_s, sx_s = r['sc'], r['sd'], r['sz'], r['sx']
-        主力 = round(ak_net)
-        超大单 = round(sc_s * ak_net)
-        大单 = round(sd_s * ak_net)
-        大户 = round(sz_s * ak_net)   # 中单
-        散户 = round(sx_s * ak_net)   # 小单
         plates[plate] = {
-            '主力': 主力, '大户': 大户, '散户': 散户,
-            '超大单': 超大单, '大单': 大单,
-            'source': 'eastmoney-push2his' + ('-live' if r.get('fresh') else '-cached'),
-            '样本数': r['sample'],
+            '主力': round(zhu), '大户': round(da), '散户': round(san),
+            '超大单': round(info.get('超大单', 0) or 0),
+            '大单': round(info.get('大单', 0) or 0),
+            'source': info.get('source', 'eastmoney-push2'),
+            '样本数': '全量板块',
         }
     if not plates:
-        print("  · 所有缓存板块 ak_net 为 0，跳过写")
+        print("  · 无板块携带真实拆分（东财主源未命中且无 AKShare 补充），跳过写 plate_em.json")
         return
     payload = {
         'updated': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'source': 'eastmoney-push2his (CI 原生聚合，真实比率跨运行累积)',
+        'source': 'eastmoney-push2 + akshare 真实五档拆分（无需二次请求）',
         'plates': plates,
-        'ratios': {p: {'sc': r['sc'], 'sd': r['sd'], 'sz': r['sz'], 'sx': r['sx'],
-                      'sample': r['sample']} for p, r in merged.items()},
     }
     os.makedirs('api', exist_ok=True)
     with open('api/plate_em.json', 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print("✅ 已写入 api/plate_em.json（%d 板块真实拆分，其中 %d 为本次刷新）"
-          % (len(plates), fresh_n))
+    print("✅ 已写入 api/plate_em.json（%d 板块真实拆分）" % len(plates))
+
+
+# === 板块讨论度（真实源：东方财富「人气榜」个股人气 → 聚合到 10 个观察板块）===
+# 讨论度 = 市场对某板块「讨论/关注度」的真实代理。东财人气榜(stock_hot_rank_em)是 A股最权威的
+# 人气/讨论度排名，走 AKShare→东财、海外 CI 可达。把 top-N 个股人气按各板块成分股求交集，
+# 即得「板块内有多少热门股 + 名次加权」的真实讨论度。任一环节失败 → 整块返回 None，绝不回填假数。
+def _pick_col(df, candidates):
+    """在 DataFrame 列中按候选名（精确 / 包含）挑一个存在的列名。"""
+    if df is None or len(df.columns) == 0:
+        return None
+    cols = list(df.columns)
+    for c in candidates:
+        if c in cols:
+            return c
+    for c in candidates:
+        for col in cols:
+            if str(c).lower() in str(col).lower():
+                return col
+    return None
+
+def _get_constituents(btype, bname):
+    """取某东财行业/概念板块的成分股代码（6 位，零填充），失败返回 []。"""
+    try:
+        if btype == 'industry':
+            fn = lambda: ak.stock_board_industry_cons_em(symbol=bname)
+        else:
+            fn = lambda: ak.stock_board_concept_cons_em(symbol=bname)
+        df = _call_with_timeout(fn, 25, None, f"{bname}成分")
+        if df is None or len(df) == 0:
+            return []
+        code_col = _pick_col(df, ['代码', '股票代码', 'code'])
+        if not code_col:
+            return []
+        return [str(c).strip().zfill(6) for c in df[code_col].tolist()]
+    except Exception as e:
+        print(f"  · 取 {bname} 成分股异常: {str(e)[:80]}")
+        return []
+
+def fetch_discussion():
+    """真实板块讨论度：东财个股人气榜 top-N → 聚合到 10 个观察板块。
+    返回 {板块: {'score':int, 'count':int, 'hotStocks':[{name,rank}], 'source':str}} 或 None。"""
+    if ak is None:
+        print("  · AKShare 不可用，跳过讨论度")
+        return None
+    try:
+        df = _call_with_timeout(lambda: ak.stock_hot_rank_em(), 25, None, "人气榜")
+        if df is None or len(df) == 0:
+            print("  · 人气榜为空，跳过讨论度")
+            return None
+        code_col = _pick_col(df, ['代码', '股票代码', 'code'])
+        name_col = _pick_col(df, ['名称', '股票名称', 'name'])
+        rank_col = _pick_col(df, ['排名', 'rank', '序号'])
+        if not code_col or not name_col:
+            print("  · 人气榜列解析失败，列为: %s" % list(df.columns))
+            return None
+        # 取 top 300 人气个股，构建 代码 -> (名次, 名称)
+        top = df.head(300)
+        hot_map = {}
+        for _, r in top.iterrows():
+            code = str(r.get(code_col, '')).strip().zfill(6)
+            name = str(r.get(name_col, '')).strip()
+            try:
+                rank = int(float(r.get(rank_col, 0) or 0)) if rank_col else 0
+            except Exception:
+                rank = 0
+            if code:
+                hot_map[code] = (rank, name)
+        print(f"  · 人气榜 top{len(hot_map)} 已获取（真实讨论度代理）")
+
+        discussion = {}
+        for plate, (btype, bname) in SECTOR_BOARDS.items():
+            cons = _get_constituents(btype, bname)
+            if not cons:
+                discussion[plate] = {'score': 0, 'count': 0,
+                                     'hotStocks': [], 'source': '人气榜(无成分)'}
+                continue
+            hits = [(rk, nm) for c in cons if c in hot_map
+                    for (rk, nm) in [hot_map[c]]]
+            # 讨论度分数：板块内进入人气榜的个股数 + 名次加权（名次越靠前权重越高）
+            score = sum(max(0, 300 - rk + 1) for (rk, _) in hits)
+            top3 = sorted(hits, key=lambda x: x[0])[:3]
+            discussion[plate] = {
+                'score': score,
+                'count': len(hits),
+                'hotStocks': [{'name': nm, 'rank': rk} for (rk, nm) in top3],
+                'source': '人气榜(东财)',
+            }
+        print("  ✅ 讨论度聚合完成：%d 个板块" % len(discussion))
+        return discussion
+    except Exception as e:
+        print(f"  · 讨论度抓取失败: {str(e)[:120]}")
+        return None
 
 
 def fetch_plate_data_tushare(token):
@@ -806,6 +783,10 @@ def fetch_plate_data():
                 inflow = float(row.get('流入资金', 0) or 0)
                 outflow = float(row.get('流出资金', 0) or 0)
                 pct = float(row.get('行业-涨跌幅', 0) or 0)
+                # 真实五档拆分（AKShare 行业/概念资金流自带 主力/中单/小单 列）
+                zhu = _try_cols(row, MAIN_COLS)
+                da = _try_cols(row, MID_COLS)
+                san = _try_cols(row, RETAIL_COLS)
                 # 匹配持仓板块
                 for plate, keywords in PLATE_KEYWORDS.items():
                     if plate in all_flows:
@@ -819,6 +800,7 @@ def fetch_plate_data():
                                 'inflow': round(inflow * 1e8),
                                 'outflow': round(outflow * 1e8),
                                 'pct': round(pct, 2),
+                                '主力': round(zhu), '大户': round(da), '散户': round(san),
                                 'source': '行业',
                             }
                             break
@@ -835,6 +817,9 @@ def fetch_plate_data():
                 inflow = float(row.get('流入资金', 0) or 0)
                 outflow = float(row.get('流出资金', 0) or 0)
                 pct = float(row.get('行业-涨跌幅', 0) or 0)
+                zhu = _try_cols(row, MAIN_COLS)
+                da = _try_cols(row, MID_COLS)
+                san = _try_cols(row, RETAIL_COLS)
                 for plate, keywords in PLATE_KEYWORDS.items():
                     if plate in all_flows:
                         continue
@@ -847,6 +832,7 @@ def fetch_plate_data():
                                 'inflow': round(inflow * 1e8),
                                 'outflow': round(outflow * 1e8),
                                 'pct': round(pct, 2),
+                                '主力': round(zhu), '大户': round(da), '散户': round(san),
                                 'source': '概念',
                             }
                             break
@@ -966,6 +952,7 @@ def fetch_citic_futures(prev_citic=None):
 
 # === 吸筹/出货 判断逻辑 ===
 MAIN_COLS = ['今日主力净流入-净额', '主力净流入', '主力净流入-净额', '主力净买额', '主力净额']
+MID_COLS = ['今日中单净流入-净额', '中单净流入', '中单净流入-净额', '中单净买额', '中单净额']
 RETAIL_COLS = ['今日小单净流入-净额', '小单净流入', '小单净流入-净额', '小单净买额', '小单净额']
 
 def _try_cols(row, names, default=0):
@@ -1136,9 +1123,10 @@ def main():
         gold = prev['gold']; goldStale = True
         print("  · 黄金接口失败，沿用上次快照")
 
-    print("[3/4] 板块资金流...")
+    print("[3/4] 板块资金流 + 讨论度...")
     plate_data = fetch_plate_data()
-    write_plate_em(plate_data)  # 东财 push2his 个股聚合，写真实主力/散户拆分
+    write_plate_em(plate_data)  # 直接复用 all_flows 已有真实主力/散户拆分（东财 push2 主源 + AKShare 兜底），无需二次请求
+    discussion = fetch_discussion()  # 真实讨论度：东财人气榜 top-N 聚合到 10 板块（失败则 None，不回填假数）
     plateFlows = []
     history_map = load_history(5)   # 近5日累计主力，用于更稳的吸筹/出货判断
     PLATE_ORDER = ['芯片', '半导体', '细分化工', '科创创业AI', '机器人',
@@ -1211,8 +1199,10 @@ def main():
         'gold': gold,
         'plateFlows': plateFlows,
         'citic': citic,
+        'discussion': discussion,   # 真实讨论度（东财人气榜聚合），失败时为 None
         'stale': {'indices': idxStale, 'gold': goldStale,
-                  'plateFlows': plateStale, 'citic': citicStale},
+                  'plateFlows': plateStale, 'citic': citicStale,
+                  'discussion': discussion is None},
     }
 
     os.makedirs('api', exist_ok=True)
