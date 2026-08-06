@@ -1,6 +1,6 @@
 {
   "updated": "2026-08-06",
-  "time": "12:10:23",
+  "time": "12:13:49",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -34,9 +34,9 @@
     }
   },
   "gold": {
-    "usd": 4258.8,
+    "usd": 4259.1,
     "usd_pct": 0.01,
-    "cny": 925.91,
+    "cny": 925.97,
     "cny_pct": 0.01,
     "fx": 6.7622
   },
@@ -226,133 +226,10 @@
       "net": -81350
     }
   },
-  "discussion": {
-    "芯片": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "半导体": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "细分化工": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "科创创业AI": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "机器人": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "新能源电池": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "锂矿": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "CPO": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "PCB": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    },
-    "创新药": {
-      "score": 0,
-      "count": 0,
-      "hotStocks": [],
-      "source": "人气榜(无匹配板块)"
-    }
-  },
-  "discussionDebug": {
-    "hotCols": [
-      "当前排名",
-      "代码",
-      "股票名称",
-      "最新价",
-      "涨跌额",
-      "涨跌幅"
-    ],
-    "hotCount": 100,
-    "hotSampleCodes": [
-      "600584",
-      "688825",
-      "002428",
-      "002407",
-      "600206"
-    ],
-    "plates": {
-      "芯片": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "半导体": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "细分化工": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "科创创业AI": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "机器人": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "新能源电池": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "锂矿": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "CPO": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "PCB": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      },
-      "创新药": {
-        "resolved": null,
-        "note": "板块名未匹配东财列表"
-      }
-    }
-  },
   "stale": {
     "indices": false,
     "gold": false,
     "plateFlows": false,
-    "citic": false,
-    "discussion": false
+    "citic": false
   }
 }
