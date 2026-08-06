@@ -87,6 +87,21 @@
   .stile .stag{font-size:10px;color:var(--faint);}
   .stile .stag.hot{color:var(--red);}
 
+  /* M2b Discussion（真实·东财人气榜聚合） */
+  .discwrap{display:flex;flex-direction:column;gap:9px;}
+  .drow{display:grid;grid-template-columns:26px 116px 1fr auto;align-items:center;gap:12px;
+    background:var(--card);border:1px solid var(--border);border-radius:9px;padding:11px 14px;}
+  .drow .drank{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--faint);text-align:center;}
+  .drow.top1 .drank{color:var(--red);}
+  .drow.top2 .drank{color:#F59E0B;}
+  .drow.top3 .drank{color:#38BDF8;}
+  .drow .dname{font-size:13px;font-weight:600;}
+  .drow .dbar{height:8px;border-radius:4px;background:var(--red);min-width:4px;
+    box-shadow:0 0 8px rgba(244,63,94,.35);}
+  .drow .dmeta{font-size:11px;color:var(--muted);text-align:right;line-height:1.5;white-space:nowrap;}
+  .drow .dmeta b{color:var(--red);font-family:var(--mono);}
+  .drow .dhot{color:var(--faint);}
+  .drow .dhot b{color:var(--gold);font-family:var(--mono);font-weight:700;}
 
   /* M3 Gold */
   .gold{display:grid;grid-template-columns:300px 1fr;gap:16px;background:var(--card);
@@ -216,6 +231,15 @@
     <div class="sectors" id="sectors"></div>
   </section>
 
+  <!-- M2b 板块讨论度（真实·东财人气榜聚合） -->
+  <section>
+    <div class="sec-head">
+      <div class="sec-title">板块讨论度 · 真实人气榜</div>
+      <div class="sec-sub">东财个股人气榜 Top300 按板块成分股聚合 · 红=高热度（讨论集中）<span class="stale-tag" id="discStaleTag" style="display:none">未更新</span></div>
+    </div>
+    <div class="discwrap" id="discussion"></div>
+  </section>
+
   <!-- M3 黄金 -->
   <section>
     <div class="sec-head">
@@ -336,7 +360,7 @@
 
   function renderAll(){
     if(!DATA) return;
-    renderIndices(); renderCitic(DATA.citic); renderSectors(); renderGold(); renderBubbles();
+    renderIndices(); renderCitic(DATA.citic); renderSectors(); renderDiscussion(); renderGold(); renderBubbles();
   }
 
   /* ---------- M1 大盘指数 ---------- */
@@ -431,6 +455,34 @@
     });
     if(!flows.length) box.innerHTML = '<div class="stile"><div class="sname">板块数据暂缺</div></div>';
     const pst = $('#plateStaleTag'); if(pst) pst.style.display = staleOn('plateFlows') ? 'inline-block' : 'none';
+  }
+
+  /* ---------- M2b 板块讨论度（真实·东财人气榜聚合） ---------- */
+  function renderDiscussion(){
+    const box = $('#discussion'); if(!box) return;
+    const disc = DATA.discussion;
+    box.innerHTML = '';
+    if(!disc){
+      box.innerHTML = '<div class="drow"><div class="dmeta" style="grid-column:1/-1;text-align:left;color:var(--faint)">讨论度数据暂缺（东财人气榜抓取失败，不影响其他模块）</div></div>';
+      const t = $('#discStaleTag'); if(t) t.style.display = 'inline-block';
+      return;
+    }
+    const arr = Object.entries(disc).map(([name, d])=>({name, ...d}))
+      .sort((a,b)=>(b.score||0)-(a.score||0));
+    const maxScore = Math.max(1, ...arr.map(d=>d.score||0));
+    arr.forEach((d, i)=>{
+      const rank = i + 1;
+      const topCls = rank<=3 ? ' top'+rank : '';
+      const w = Math.max(4, Math.round((d.score||0)/maxScore*100));
+      const hots = (d.hotStocks||[]).map(h=>`<span class="dhot"><b>#${h.rank}</b> ${h.name}</span>`).join('　') || '<span class="dhot">—</span>';
+      const el = document.createElement('div'); el.className = 'drow' + topCls;
+      el.innerHTML = `<div class="drank">${rank}</div>
+        <div class="dname">${d.name}</div>
+        <div class="dbar" style="width:${w}%"></div>
+        <div class="dmeta"><b>${(d.count||0)}</b> 只人气股<br>${hots}</div>`;
+      box.appendChild(el);
+    });
+    const t = $('#discStaleTag'); if(t) t.style.display = staleOn('discussion') ? 'inline-block' : 'none';
   }
 
   /* ---------- M3 黄金 ---------- */
