@@ -1,4 +1,4 @@
-# Market Monitor — 市场监控面板 技术文档
+# Market Monitor — 市场监控面板 技术文档（未勘误
 
 > 版本：v1.0 | 更新：2026-07-19
 > 仓库：https://github.com/xiaoliu-bot/market-monitor
