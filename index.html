@@ -59,9 +59,33 @@
   .icard .icode{font-size:11px;color:var(--faint);background:#1c1c20;padding:2px 7px;border-radius:5px;}
   .icard .ival{font-size:30px;font-weight:700;margin:10px 0 4px;}
   .icard .ichg{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;}
-  .icard.citic{border-color:var(--blue);box-shadow:0 0 0 1px rgba(59,130,246,.12);}
+  .icard.citic{border-color:var(--border);box-shadow:none;grid-column:1 / -1;padding:20px 22px;}
   .icard.citic .ival{font-size:20px;}
   .up{color:var(--red);} .down{color:var(--green);}
+  .citic-head{margin-bottom:16px;}
+  .citic-title{font-size:16px;font-weight:700;letter-spacing:.3px;}
+  .citic-sub{font-size:12px;color:var(--faint);margin-top:5px;}
+  .citic-chart{display:flex;flex-direction:column;gap:13px;}
+  .citic-row{display:grid;grid-template-columns:100px 72px 1fr;align-items:center;gap:12px;}
+  .citic-label{font-size:13px;font-weight:600;white-space:nowrap;}
+  .citic-label .sym{color:var(--text);}
+  .citic-label .name{color:var(--muted);font-size:12px;font-weight:500;margin-left:5px;}
+  .citic-value{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:13px;font-weight:700;text-align:right;white-space:nowrap;}
+  .citic-value.red{color:var(--red);} .citic-value.green{color:var(--green);}
+  .citic-barwrap{position:relative;height:22px;background:var(--card2);border-radius:4px;overflow:visible;}
+  .citic-bar{height:100%;border-radius:4px 0 0 4px;min-width:2px;transition:width .6s ease;}
+  .citic-bar.red{background:var(--red);} .citic-bar.green{background:var(--green);}
+  .citic-axis{position:absolute;left:0;top:-3px;bottom:-3px;width:1px;background:var(--line);}
+  .citic-axis-label{position:absolute;left:3px;top:-16px;font-size:10px;color:var(--faint);}
+  .citic-foot{margin-top:18px;padding-top:14px;border-top:1px solid var(--border);display:flex;justify-content:center;align-items:center;gap:6px;flex-wrap:wrap;font-size:14px;font-weight:500;}
+  .citic-foot .num{font-family:'JetBrains Mono',ui-monospace,monospace;font-weight:700;}
+  .citic-foot .red{color:var(--red);} .citic-foot .green{color:var(--green);}
+  .citic-foot .sep{margin:0 8px;color:var(--faint);}
+  @media(max-width:700px){
+    .citic-row{grid-template-columns:86px 62px 1fr;gap:8px;}
+    .citic-label .name{display:none;}
+    .citic-foot{font-size:13px;}
+  }
 
   /* 分时走势图 */
   .idxchart-wrap{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:14px;}
@@ -396,23 +420,52 @@
     document.body.appendChild(s);
   }
 
-  /* ---------- 中信期货 股指期货多空单 ---------- */
+  /* ---------- 中信期货 股指期货净持仓（横向条形图） ---------- */
   function renderCitic(citic){
     const box = $('#indices');
     const el = document.createElement('div'); el.className = 'icard citic';
     if(!citic || !citic.contracts || !Object.keys(citic.contracts).length){
-      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
-        <div class="ival mono">--</div><div class="ichg mono">数据暂缺（中金所数据抓取失败）</div>`;
+      el.innerHTML = `<div class="citic-head"><div class="citic-title">中信期货 · 股指期货净持仓</div>
+        <div class="citic-sub">数据暂缺（中金所数据抓取失败）</div></div>`;
       box.appendChild(el); return;
     }
+    const fmt = n => `${n>=0?'+':'−'}${Math.abs(n).toLocaleString('en-US')}`;
+    const fmtAbs = n => `${n>=0?'':'−'}${Math.abs(n).toLocaleString('en-US')}`;
+    const dateStr = (citic.date||'').replace(/(\d{4})(\d{2})(\d{2})/,'$1-$2-$3');
     const t = citic.total || {};
     const net = t.net || 0;
-    const up = net >= 0;
-    const rows = Object.entries(citic.contracts).map(([sym,d])=>`${sym} ${d.net>=0?'+':'−'}${Math.abs(d.net).toLocaleString('en-US')}`).join('　');
-      el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
-      <div class="ival mono" style="color:${up?'var(--red)':'var(--green)'}">${up?'净多':'净空'} ${net.toLocaleString('en-US')} 手</div>
-      <div class="ichg mono ${up?'up':'down'}" style="font-size:12px">${rows}</div>
-      <div class="mono" style="font-size:11px;color:var(--faint);margin-top:2px">中金所前20会员 · 中信期货</div>`;
+    const change = t.change_net;
+    const totalCls = net < 0 ? 'red' : 'green';
+    const totalWord = net < 0 ? '净空' : '净多';
+    let changeHtml = '';
+    if(change != null){
+      const changeCls = (net < 0 ? change > 0 : change < 0) ? 'green' : 'red';
+      const changeWord = net < 0 ? (change > 0 ? '今日减空' : '今日加空') : (change > 0 ? '今日加多' : '今日减多');
+      changeHtml = `<span class="sep">·</span><span>${changeWord}</span><span class="num ${changeCls}">${fmt(change)}</span><span>手</span>`;
+    }
+    const contracts = Object.entries(citic.contracts);
+    const maxAbs = Math.max(...contracts.map(([,d])=>Math.abs(d.net||0)), 1);
+    const rows = contracts.map(([sym,d])=>{
+      const v = d.net || 0;
+      const cls = v < 0 ? 'red' : 'green';
+      const pct = Math.round(Math.abs(v)/maxAbs*100);
+      return `<div class="citic-row">
+        <div class="citic-label"><span class="sym">${sym}</span><span class="name">${d.label||''}</span></div>
+        <div class="citic-value ${cls}">${fmtAbs(v)}</div>
+        <div class="citic-barwrap">
+          <div class="citic-bar ${cls}" style="width:${pct}%"></div>
+          <div class="citic-axis"></div><div class="citic-axis-label">0</div>
+        </div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="citic-head">
+      <div class="citic-title">中信期货 · 股指期货净持仓${staleTag('citic')}</div>
+      <div class="citic-sub">${dateStr} 盘后 · 负值 = 净空单（空单多于多单）· 单位：手</div>
+    </div>
+    <div class="citic-chart">${rows}</div>
+    <div class="citic-foot">
+      <span>全市场合计${totalWord}</span><span class="num ${totalCls}">${fmtAbs(net)}</span><span>手</span>${changeHtml}
+    </div>`;
     box.appendChild(el);
   }
 
