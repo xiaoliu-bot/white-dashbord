@@ -223,7 +223,9 @@
     "total": {
       "long": 153778,
       "short": 225580,
-      "net": -71802
+      "net": -71802,
+      "prev_net": -72559,
+      "change_net": 757
     }
   },
   "stale": {
