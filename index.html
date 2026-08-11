@@ -408,10 +408,11 @@
     const t = citic.total || {};
     const net = t.net || 0;
     const up = net >= 0;
-    const rows = Object.entries(citic.contracts).map(([sym,d])=>`${d.label} ${(d.net>=0?'+':'')+d.net}`).join('　');
+    const rows = Object.entries(citic.contracts).map(([sym,d])=>`${sym} ${d.net>=0?'+':'−'}${Math.abs(d.net).toLocaleString('en-US')}`).join('　');
       el.innerHTML = `<div class="row1"><span class="iname">中信期指多空</span><span class="icode">CFFEX</span>${staleTag('citic')}</div>
-      <div class="ival mono" style="color:${up?'var(--red)':'var(--green)'}">${up?'净多':'净空'} ${net} 手</div>
-      <div class="ichg mono ${up?'up':'down'}" style="font-size:12px">${rows}</div>`;
+      <div class="ival mono" style="color:${up?'var(--red)':'var(--green)'}">${up?'净多':'净空'} ${net.toLocaleString('en-US')} 手</div>
+      <div class="ichg mono ${up?'up':'down'}" style="font-size:12px">${rows}</div>
+      <div class="mono" style="font-size:11px;color:var(--faint);margin-top:2px">中金所前20会员 · 中信期货</div>`;
     box.appendChild(el);
   }
 
