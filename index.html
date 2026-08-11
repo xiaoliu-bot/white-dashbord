@@ -60,6 +60,7 @@
   .icard .ival{font-size:30px;font-weight:700;margin:10px 0 4px;}
   .icard .ichg{font-size:13px;font-weight:700;display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;}
   .icard.citic{border-color:var(--border);box-shadow:none;grid-column:1 / -1;padding:20px 22px;}
+  .citic-wrap{margin-top:16px;}
   .icard.citic .ival{font-size:20px;}
   .up{color:var(--red);} .down{color:var(--green);}
   .citic-head{margin-bottom:16px;}
@@ -225,6 +226,7 @@
       </div>
     </div>
     <div class="indices" id="indices"></div>
+    <div class="citic-wrap" id="citic"></div>
     <div class="idxchart-wrap">
       <div class="idxchart-head"><span class="t">指数分时走势（归一化涨跌幅 %）</span><span class="t" id="chartRange"></span></div>
       <canvas id="idxChart"></canvas>
@@ -422,7 +424,8 @@
 
   /* ---------- 中信期货 股指期货净持仓（横向条形图） ---------- */
   function renderCitic(citic){
-    const box = $('#indices');
+    const box = document.getElementById('citic') || $('#indices');
+    box.innerHTML = '';
     const el = document.createElement('div'); el.className = 'icard citic';
     if(!citic || !citic.contracts || !Object.keys(citic.contracts).length){
       el.innerHTML = `<div class="citic-head"><div class="citic-title">中信期货 · 股指期货净持仓</div>
