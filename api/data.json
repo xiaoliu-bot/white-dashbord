@@ -1,6 +1,6 @@
 {
   "updated": "2026-08-18",
-  "time": "11:26:23",
+  "time": "11:42:21",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -34,10 +34,10 @@
     }
   },
   "gold": {
-    "usd": 4391.7,
-    "usd_pct": -0.07,
-    "cny": 953.52,
-    "cny_pct": -0.07,
+    "usd": 4392.6,
+    "usd_pct": 0.02,
+    "cny": 953.72,
+    "cny_pct": 0.02,
     "fx": 6.7531
   },
   "plateFlows": [
@@ -232,6 +232,6 @@
     "indices": false,
     "gold": false,
     "plateFlows": false,
-    "citic": false
+    "citic": true
   }
 }
