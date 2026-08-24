@@ -1,6 +1,6 @@
 {
   "updated": "2026-08-24",
-  "time": "08:04:33",
+  "time": "08:20:37",
   "indices": {
     "000001": {
       "name": "上证指数",
@@ -16,9 +16,9 @@
     },
     "HSTECH": {
       "name": "恒生科技",
-      "price": 4594.32,
-      "chg": -171.84,
-      "pct": -3.61
+      "price": 4585.86,
+      "chg": -180.3,
+      "pct": -3.78
     },
     "000300": {
       "name": "沪深300",
@@ -34,10 +34,10 @@
     }
   },
   "gold": {
-    "usd": 4640.4,
-    "usd_pct": 0.12,
-    "cny": 1003.93,
-    "cny_pct": 0.12,
+    "usd": 4637.2,
+    "usd_pct": -0.07,
+    "cny": 1003.24,
+    "cny_pct": -0.07,
     "fx": 6.7291
   },
   "plateFlows": [
@@ -193,45 +193,45 @@
     }
   ],
   "citic": {
-    "date": "20260821",
+    "date": "20260824",
     "contracts": {
       "IF": {
         "label": "沪深300",
-        "long": 30944,
-        "short": 50277,
-        "net": -19333
+        "long": 30210,
+        "short": 50501,
+        "net": -20291
       },
       "IC": {
         "label": "中证500",
-        "long": 40533,
-        "short": 52692,
-        "net": -12159
+        "long": 44536,
+        "short": 56896,
+        "net": -12360
       },
       "IH": {
         "label": "上证50",
-        "long": 10232,
-        "short": 22820,
-        "net": -12588
+        "long": 11392,
+        "short": 24113,
+        "net": -12721
       },
       "IM": {
         "label": "中证1000",
-        "long": 61232,
-        "short": 90861,
-        "net": -29629
+        "long": 62368,
+        "short": 92472,
+        "net": -30104
       }
     },
     "total": {
-      "long": 142941,
-      "short": 216650,
-      "net": -73709,
-      "prev_net": -70690,
-      "change_net": -3019
+      "long": 148506,
+      "short": 223982,
+      "net": -75476,
+      "prev_net": -73709,
+      "change_net": -1767
     }
   },
   "stale": {
     "indices": false,
     "gold": false,
     "plateFlows": false,
-    "citic": true
+    "citic": false
   }
 }
